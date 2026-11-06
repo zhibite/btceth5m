@@ -43,6 +43,7 @@ class WindowManager:
         self._running = False
         self._task: asyncio.Task | None = None
         self._last_refresh: dict[str, float] = {}
+        self._window_seen: dict[str, float] = {}
 
     def start(self) -> None:
         self._running = True
@@ -68,18 +69,29 @@ class WindowManager:
     async def fetch_window(self, asset: str, start_ts: int) -> Optional[WindowMarket]:
         return await self.gamma.get_window(asset, start_ts)
 
-    def needs_refresh(self, market: WindowMarket, now: float) -> bool:
+    def needs_refresh(
+        self,
+        market: WindowMarket,
+        now: float,
+        seen_ts: float | None = None,
+    ) -> bool:
         """Whether another Gamma fetch can still add window metadata.
 
         ``finalPrice`` stays null until the window closes, so including it in
         the condition unconditionally would poll Gamma every couple of
         seconds for the entire five-minute window while nothing can change.
+
+        The p0 grace period runs from ``seen_ts`` (when this process found
+        the window) rather than ``start_ts``: after a mid-window restart a
+        late priceToBeat is still worth fetching, even though the window
+        itself started minutes ago.
         """
         if market.final_price is None and now >= market.end_ts:
             return True
+        since = market.start_ts if seen_ts is None else seen_ts
         return (
             market.price_to_beat is None
-            and now - market.start_ts <= self.p0_late_grace_s
+            and now - since <= self.p0_late_grace_s
         )
 
     async def _run(self) -> None:
@@ -95,6 +107,7 @@ class WindowManager:
                         # on the next tick without blocking the other assets.
                         continue
                     self.current[asset] = market
+                    self._window_seen[asset] = now
                     log.info(
                         "window.discovered",
                         asset=asset,
@@ -115,7 +128,7 @@ class WindowManager:
                 # after the boundary, and finalPrice only appears once the
                 # window has ended.
                 if (
-                    self.needs_refresh(cur, now)
+                    self.needs_refresh(cur, now, self._window_seen.get(asset))
                     and now - self._last_refresh.get(asset, 0.0)
                     >= self.refresh_interval_s
                 ):
