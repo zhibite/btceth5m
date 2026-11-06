@@ -338,18 +338,41 @@ function renderAssets(status) {
 }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
-function renderPositions(positions) {
-  const rows = (positions || []).map((p) => `<tr>
-    <td>${esc(p.asset)}</td>
-    <td class="mono">${utcTime(p.start_ts)}</td>
-    <td><span class="pill ${p.side === "UP" ? "buy" : "sell"}">${esc(p.side)}</span></td>
-    <td class="mono">${fmt(p.size, 2)}</td>
-    <td class="mono">${fmt(p.avg_price, 3)}</td>
-    <td class="mono">$${fmt(p.cost, 2)}</td>
-    <td class="mono">$${fmt(p.fees, 4)}</td>
-    <td>${p.status === "open" ? "持仓中" : "已结算"}</td>
-  </tr>`).join("");
-  $("positions-tbody").innerHTML = rows || '<tr><td colspan="8" class="no-data">无持仓</td></tr>';
+function renderPositions(positions, assets) {
+  // The engine publishes the live mark (best bid of the held token) and the
+  // unrealized PnL on each asset payload; join it to the DB rows by window.
+  const liveByKey = new Map();
+  Object.values(assets || {}).forEach((data) => {
+    const p = data && data.position;
+    if (p && p.mark !== null && p.mark !== undefined) {
+      liveByKey.set(p.asset + ":" + p.start_ts, p);
+    }
+  });
+  const rows = (positions || []).map((p) => {
+    const live = liveByKey.get(p.asset + ":" + p.start_ts);
+    const mark = live ? live.mark : null;
+    const unrealized = live && live.unrealized !== undefined ? live.unrealized : null;
+    const roi = unrealized !== null && Number(p.cost) > 0
+      ? Number(unrealized) / Number(p.cost)
+      : null;
+    const pnl = unrealized === null
+      ? "--"
+      : `<span class="${pnlClass(unrealized)}">${money(unrealized)}</span>` +
+        (roi === null ? "" : ` <span class="muted">(${pct(roi)})</span>`);
+    return `<tr>
+      <td>${esc(p.asset)}</td>
+      <td class="mono">${utcTime(p.start_ts)}</td>
+      <td><span class="pill ${p.side === "UP" ? "buy" : "sell"}">${esc(p.side)}</span></td>
+      <td class="mono">${fmt(p.size, 2)}</td>
+      <td class="mono">${fmt(p.avg_price, 3)}</td>
+      <td class="mono">$${fmt(p.cost, 2)}</td>
+      <td class="mono">$${fmt(p.fees, 4)}</td>
+      <td class="mono">${fmt(mark, 3)}</td>
+      <td class="mono">${pnl}</td>
+      <td>${p.status === "open" ? "持仓中" : "已结算"}</td>
+    </tr>`;
+  }).join("");
+  $("positions-tbody").innerHTML = rows || '<tr><td colspan="10" class="no-data">无持仓</td></tr>';
   $("position-count").textContent = String((positions || []).length);
 }
 
@@ -435,7 +458,7 @@ async function refresh() {
     const status = await getJSON("/api/status");
     renderSummary(status);
     renderAssets(status);
-    renderPositions(status.positions || []);
+    renderPositions(status.positions || [], status.assets || {});
     if (Date.now() - lastTables > 5000) {
       lastTables = Date.now();
       await Promise.all([loadFills(), loadSignals()]);
