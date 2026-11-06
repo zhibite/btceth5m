@@ -136,6 +136,40 @@ def test_sweep_through_bid_fills_maker(tmp_path):
     db.close()
 
 
+def test_requote_does_not_double_count_prior_fills(tmp_path):
+    db = Database(tmp_path / "shadow.db")
+    shadow = MakerShadow(db)
+    params = _params(maker_chase_bid=True)
+    _open(db, shadow, params=params)
+
+    shadow.on_trades([_trade(0.49, 104.0)])  # 4 fill, 6 remain at 0.49
+
+    # The best bid moves up to 0.50 with 50 shares of queue; the remaining
+    # 6 shares requote to the back of the new level.
+    book = _book(bids={0.50: 50.0, 0.49: 100.0})
+    shadow.on_tick(
+        now=1010.0,
+        fair_by_asset={"BTC": 0.61},
+        books={"up": book},
+        params=params,
+    )
+    row = db.maker_shadow_row("BTC", 1000)
+    assert abs(float(row["quote_price"]) - 0.50) < 1e-9
+    assert abs(float(row["maker_filled"]) - 4.0) < 1e-9
+
+    # Consuming the new queue fills nothing...
+    shadow.on_trades([_trade(0.50, 50.0, ts=1011.0)])
+    row = db.maker_shadow_row("BTC", 1000)
+    assert abs(float(row["maker_filled"]) - 4.0) < 1e-9
+
+    # ...and only prints beyond it fill the remaining 6 shares.
+    shadow.on_trades([_trade(0.50, 6.0, ts=1012.0)])
+    row = db.maker_shadow_row("BTC", 1000)
+    assert abs(float(row["maker_filled"]) - 10.0) < 1e-9
+    assert row["status"] == "maker_filled"
+    db.close()
+
+
 def test_partial_maker_then_taker_fallback(tmp_path):
     db = Database(tmp_path / "shadow.db")
     shadow = MakerShadow(db)

@@ -2,7 +2,9 @@
 
 The manager polls Gamma once per second:
   * at each 300s boundary it discovers the new window for every asset
-  * while a window is missing priceToBeat / finalPrice it refreshes the event
+  * it backfills a late priceToBeat for a short grace period after the open
+  * it refreshes finalPrice only after the window has ended (it cannot be
+    populated before then, so polling for it during the window is wasted)
   * it invokes the engine callback exactly once per newly discovered window
 """
 from __future__ import annotations
@@ -21,6 +23,11 @@ WindowCallback = Callable[[str, WindowMarket], Awaitable[None]]
 
 
 class WindowManager:
+    refresh_interval_s = 2.0
+    # Gamma sometimes publishes priceToBeat a few seconds late; after this
+    # grace period stop polling (the engine falls back to the RTDS TWAP).
+    p0_late_grace_s = 60.0
+
     def __init__(
         self,
         gamma: GammaClient,
@@ -61,6 +68,20 @@ class WindowManager:
     async def fetch_window(self, asset: str, start_ts: int) -> Optional[WindowMarket]:
         return await self.gamma.get_window(asset, start_ts)
 
+    def needs_refresh(self, market: WindowMarket, now: float) -> bool:
+        """Whether another Gamma fetch can still add window metadata.
+
+        ``finalPrice`` stays null until the window closes, so including it in
+        the condition unconditionally would poll Gamma every couple of
+        seconds for the entire five-minute window while nothing can change.
+        """
+        if market.final_price is None and now >= market.end_ts:
+            return True
+        return (
+            market.price_to_beat is None
+            and now - market.start_ts <= self.p0_late_grace_s
+        )
+
     async def _run(self) -> None:
         while self._running:
             now = time.time()
@@ -90,10 +111,14 @@ class WindowManager:
                             )
                     continue
 
-                # Late metadata: priceToBeat / finalPrice may be null for a
-                # few seconds after the boundary.
-                missing = cur.price_to_beat is None or cur.final_price is None
-                if missing and now - self._last_refresh.get(asset, 0.0) >= 2.0:
+                # Late metadata: priceToBeat may be null for a few seconds
+                # after the boundary, and finalPrice only appears once the
+                # window has ended.
+                if (
+                    self.needs_refresh(cur, now)
+                    and now - self._last_refresh.get(asset, 0.0)
+                    >= self.refresh_interval_s
+                ):
                     self._last_refresh[asset] = now
                     fresh = await self.gamma.get_window(asset, start)
                     if fresh is not None:

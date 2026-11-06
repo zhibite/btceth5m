@@ -423,7 +423,12 @@ class MakerShadow:
         attempt.quote.depth_above = float(
             sum(size for price, size in book.bids.items() if price > new_bid)
         )
-        attempt.consumed = 0.0
+        # Re-anchor the consumption counter so the fill rule
+        #   new_fill = (consumed - queue_ahead) - maker_filled
+        # still measures prints beyond the *new* queue. Zeroing it discards
+        # the offset that maker_filled subtracts, so a partial fill at the
+        # old price would have to be consumed again at the new level.
+        attempt.consumed = attempt.maker_filled
         self._persist(attempt)
         log.info(
             "maker_shadow.requote",

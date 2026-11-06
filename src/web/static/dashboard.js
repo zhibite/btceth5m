@@ -1,7 +1,6 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const ASSETS = ["BTC", "ETH"];
 const PAGERS = {
   fills: { limit: 20, offset: 0, total: 0 },
   signals: { limit: 20, offset: 0, total: 0 },
@@ -30,6 +29,14 @@ const esc = (v) =>
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function assetNames(status) {
+  // Configured assets first so the grid renders even before the engine has
+  // published a tick for an asset; runtime keys cover any extra assets.
+  const names = new Set((status && status.configured_assets) || []);
+  Object.keys((status && status.assets) || {}).forEach((a) => names.add(a));
+  return Array.from(names).sort();
+}
 
 function outcomePill(outcome) {
   if (outcome !== "UP" && outcome !== "DOWN") return "--";
@@ -151,6 +158,7 @@ function setStat(id, value, extraClass) {
 }
 
 function renderSummary(status) {
+  const names = assetNames(status);
   const today = status.summary?.today || {};
   const total = status.summary?.total || {};
   setStat("today-pnl", today.pnl, pnlClass(today.pnl));
@@ -173,9 +181,12 @@ function renderSummary(status) {
   $("control-bar").classList.toggle("stopped", active);
   $("control-dot").className = "control-dot " + (active ? "stopped" : "running");
   $("control-label").textContent = active ? "策略已停止" : "策略运行中";
+  const assetLabel = names.join("/") || "BTC/ETH";
   $("control-meta").textContent = active
     ? (status.killswitch?.reason || "手动停止")
-    : "纸盘 · 自动扫描 BTC/ETH 5m 窗口";
+    : "纸盘 · 自动扫描 " + assetLabel + " 5m 窗口";
+  const assetSub = $("asset-sub");
+  if (assetSub) assetSub.textContent = (names.join(" / ") || "BTC / ETH") + " 5m 窗口";
   $("stop-btn").hidden = active;
   $("start-btn").hidden = !active;
 
@@ -318,9 +329,12 @@ function assetCard(asset, data) {
   </div>`;
 }
 
-function renderAssets(assets) {
+function renderAssets(status) {
   const el = $("asset-grid");
-  el.innerHTML = ASSETS.map((asset) => assetCard(asset, assets ? assets[asset] : null)).join("");
+  const assets = (status && status.assets) || {};
+  el.innerHTML = assetNames(status)
+    .map((asset) => assetCard(asset, assets[asset] || null))
+    .join("");
 }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
@@ -420,7 +434,7 @@ async function refresh() {
   try {
     const status = await getJSON("/api/status");
     renderSummary(status);
-    renderAssets(status.assets || {});
+    renderAssets(status);
     renderPositions(status.positions || []);
     if (Date.now() - lastTables > 5000) {
       lastTables = Date.now();
