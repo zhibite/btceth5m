@@ -130,7 +130,7 @@ async def main() -> None:
     )
     paper = PaperBroker(db, runtime)
     live = LiveBroker(settings) if settings.live_enabled else None
-    router = BrokerRouter(settings, paper, live)
+    router = BrokerRouter(settings, paper, live, runtime)
     maker_shadow = MakerShadow(db)
     engine = StrategyEngine(
         settings=settings,
@@ -169,6 +169,11 @@ async def main() -> None:
         "boot",
         assets=settings.assets_list,
         mode=router.mode,
+        asset_modes={
+            asset: router.mode_for(asset) for asset in settings.assets_list
+        },
+        live_available=router.live_available,
+        live_lock_reason=router.live_lock_reason,
         live_enabled=settings.live_enabled,
         db=str(settings.db_path),
         web=f"{settings.web_host}:{settings.web_port}",

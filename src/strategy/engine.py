@@ -86,6 +86,10 @@ class StrategyEngine:
             "engine.started",
             assets=self.settings.assets_list,
             mode=self.router.mode,
+            asset_modes={
+                asset: self.router.mode_for(asset)
+                for asset in self.settings.assets_list
+            },
             open_positions=len(self.positions),
         )
 
@@ -279,10 +283,14 @@ class StrategyEngine:
             if status != "candidate" or best is None:
                 payload["status"] = status
                 self._publish(asset, payload)
-                # When both sides are gated, still log the best one so the
-                # near-miss table shows what min_fair/min_entry_price filtered.
-                watch = best or max(candidates, key=lambda c: c["edge"], default=None)
-                self._maybe_log_near_miss(asset, market, watch, params, status)
+                if status != "disabled":
+                    # When both sides are gated, still log the best one so the
+                    # near-miss table shows what min_fair/min_entry_price
+                    # filtered. A disabled asset intentionally logs nothing.
+                    watch = best or max(
+                        candidates, key=lambda c: c["edge"], default=None
+                    )
+                    self._maybe_log_near_miss(asset, market, watch, params, status)
                 continue
 
             # ── execute the winning candidate ────────────────────────────
@@ -404,6 +412,8 @@ class StrategyEngine:
     ) -> str:
         if position is not None:
             return "in_position"
+        if not params.trading_enabled:
+            return "disabled"
         ok, reason = self.risk.can_enter(market.asset)
         if not ok:
             return reason
@@ -502,7 +512,7 @@ class StrategyEngine:
             "time_left": market.end_ts - now,
             "position": self._position_info(market.asset, market.start_ts),
             "status": status,
-            "mode": self.router.mode,
+            "mode": self.router.mode_for(market.asset),
             "killswitch": self.kill.to_dict(),
             "daily_pnl": self.risk.daily_pnl(market.asset),
             "params": self.runtime.params_for(market.asset).model_dump(),

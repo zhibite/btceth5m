@@ -115,3 +115,21 @@ def test_entry_check_reports_filtered_sides():
         engine, market, 1180.0, params, None, None, {"candidates": cands}
     )
     assert status == "filtered(fair,price)"
+
+
+def test_disabled_asset_does_not_enter():
+    params = StrategyParams(trading_enabled=False)
+    engine = StrategyEngine.__new__(StrategyEngine)
+    engine.risk = SimpleNamespace(can_enter=lambda asset: (True, ""))
+    market = _market()
+
+    status = StrategyEngine._entry_check(
+        engine, market, 1180.0, params, {"side": "UP"}, None, {}
+    )
+    assert status == "disabled"
+
+    # An open position still reports as held so it can settle normally.
+    status = StrategyEngine._entry_check(
+        engine, market, 1180.0, params, {"side": "UP"}, {"id": 1}, {}
+    )
+    assert status == "in_position"

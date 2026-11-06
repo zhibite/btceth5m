@@ -256,7 +256,7 @@ async def api_status(_: None = Depends(require_read)) -> dict:
     state = _get_state()
     return _clean(
         {
-            "mode": state.router.mode,
+            **_mode_state(state),
             "uptime_s": time.time() - state.started_at,
             "killswitch": state.killswitch.to_dict(),
             "summary": state.db.summary(),
@@ -427,13 +427,52 @@ def _asset_key(asset: str | None) -> str | None:
     return value or None
 
 
-@app.get("/api/config")
-async def api_get_config(
-    asset: str | None = Query(None), _: None = Depends(require_login)
-) -> dict:
-    state = _get_state()
-    key = _asset_key(asset)
-    params = state.runtime.params_for(key) if key else state.runtime.params
+_LIVE_LOCK_LABELS = {
+    "live_disabled": "服务端 LIVE_ENABLED=false",
+    "paper_trading": "服务端 PAPER_TRADING=true（强制纸盘）",
+    "live_client_missing": "实盘客户端未初始化",
+    "credentials_missing": "缺少 WALLET_PRIVATE_KEY",
+    "live_not_implemented": "实盘下单尚未实现",
+}
+
+
+def _asset_modes(state: Any) -> dict[str, str]:
+    fn = getattr(state.router, "mode_for", None)
+    if not callable(fn):
+        mode = str(getattr(state.router, "mode", "paper") or "paper")
+        return {asset: mode for asset in state.settings.assets_list}
+    return {asset: str(fn(asset)) for asset in state.settings.assets_list}
+
+
+def _configured_modes(state: Any) -> dict[str, str]:
+    fn = getattr(state.router, "configured_mode", None)
+    if not callable(fn):
+        return _asset_modes(state)
+    return {asset: str(fn(asset)) for asset in state.settings.assets_list}
+
+
+def _live_available(state: Any) -> bool:
+    return bool(getattr(state.router, "live_available", False))
+
+
+def _live_lock_reason(state: Any) -> str:
+    return str(getattr(state.router, "live_lock_reason", "") or "")
+
+
+def _mode_state(state: Any) -> dict[str, Any]:
+    reason = _live_lock_reason(state)
+    return {
+        "mode": str(getattr(state.router, "mode", "paper") or "paper"),
+        "asset_modes": _asset_modes(state),
+        "configured_modes": _configured_modes(state),
+        "live_available": _live_available(state),
+        "live_lock_reason": reason,
+        "live_lock_message": _LIVE_LOCK_LABELS.get(reason, ""),
+    }
+
+
+def _config_payload(state: Any, key: str | None, params: Any) -> dict[str, Any]:
+    configured = _configured_modes(state).get(key or "", params.trading_mode)
     return {
         "params": params.model_dump(),
         "global_params": state.runtime.params.model_dump(),
@@ -444,7 +483,45 @@ async def api_get_config(
         "asset": key or "",
         "source": state.runtime.source_for(key),
         "overridden": bool(key and state.runtime.has_override(key)),
-        "mode": state.router.mode,
+        "configured_mode": configured,
+        "effective_mode": _asset_modes(state).get(key or "", configured),
+        **_mode_state(state),
+    }
+
+
+@app.get("/api/config")
+async def api_get_config(
+    asset: str | None = Query(None), _: None = Depends(require_login)
+) -> dict:
+    state = _get_state()
+    key = _asset_key(asset)
+    params = state.runtime.params_for(key) if key else state.runtime.params
+    return _config_payload(state, key, params)
+
+
+@app.get("/api/config/assets")
+async def api_config_assets(_: None = Depends(require_login)) -> dict:
+    """Every configured asset as one card for the config page."""
+    state = _get_state()
+    cards = []
+    for asset in state.settings.assets_list:
+        params = state.runtime.params_for(asset)
+        cards.append(
+            {
+                "asset": asset,
+                "params": params.model_dump(),
+                "source": state.runtime.source_for(asset),
+                "overridden": state.runtime.has_override(asset),
+                "configured_mode": _configured_modes(state).get(
+                    asset, params.trading_mode
+                ),
+                "effective_mode": _asset_modes(state).get(asset, "paper"),
+            }
+        )
+    return {
+        "assets": state.settings.assets_list,
+        "cards": cards,
+        **_mode_state(state),
     }
 
 
@@ -462,14 +539,13 @@ async def api_put_config(
         params = state.runtime.update(patch, asset=key)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=_validation_errors(exc)) from exc
-    log.info("web.config_updated", asset=key or "GLOBAL", patch=list(patch.keys()))
-    return {
-        "ok": True,
-        "params": params.model_dump(),
-        "asset": key or "",
-        "source": state.runtime.source_for(key),
-        "overridden": bool(key and state.runtime.has_override(key)),
-    }
+    log.info(
+        "web.config_updated",
+        asset=key or "GLOBAL",
+        mode=params.trading_mode,
+        patch=list(patch.keys()),
+    )
+    return {"ok": True, **_config_payload(state, key, params)}
 
 
 @app.post("/api/config/reset")
@@ -479,14 +555,8 @@ async def api_reset_config(
     state = _get_state()
     key = _asset_key((payload or {}).get("asset"))
     params = state.runtime.reset(key)
-    log.info("web.config_reset", asset=key or "GLOBAL")
-    return {
-        "ok": True,
-        "params": params.model_dump(),
-        "asset": key or "",
-        "source": state.runtime.source_for(key),
-        "overridden": bool(key and state.runtime.has_override(key)),
-    }
+    log.info("web.config_reset", asset=key or "GLOBAL", mode=params.trading_mode)
+    return {"ok": True, **_config_payload(state, key, params)}
 
 
 @app.get("/api/config/schema")

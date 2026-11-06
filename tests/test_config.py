@@ -18,6 +18,8 @@ def test_strategy_defaults_are_sane():
     assert 0 < params.model_buffer < 1
     assert params.max_position_usd > 0
     assert params.entry_min_rel_s < params.entry_max_rel_s
+    assert params.trading_mode == "paper"
+    assert params.trading_enabled is True
 
 
 def test_runtime_config_persists_and_resets():
@@ -40,3 +42,17 @@ def test_runtime_config_ignores_unknown_keys():
     runtime = RuntimeConfig(db)
     runtime.update({"not_a_field": 123})
     assert runtime.params.min_edge > 0
+
+
+def test_trading_mode_is_validated_and_persisted():
+    db = _FakeDB()
+    runtime = RuntimeConfig(db)
+    runtime.update({"trading_mode": "live"}, asset="BTC")
+    assert runtime.params_for("BTC").trading_mode == "live"
+
+    reloaded = RuntimeConfig(db)
+    assert reloaded.params_for("BTC").trading_mode == "live"
+    assert reloaded.params_for("ETH").trading_mode == "paper"
+
+    reloaded.reset("BTC")
+    assert reloaded.params_for("BTC").trading_mode == "paper"

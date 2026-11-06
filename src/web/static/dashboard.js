@@ -95,6 +95,7 @@ function statusLabel(raw) {
     return "已过滤 " + gates.map((g) => names[g] || g).join(" · ");
   }
   if (s === "killswitch") return "已停止";
+  if (s === "disabled") return "交易已关闭";
   if (s === "daily_loss_limit") return "触发日损失限制";
   if (s === "fill_rejected") return "成交被拒";
   if (s.startsWith("execution_error")) return "执行错误";
@@ -109,6 +110,7 @@ function statusClass(raw) {
   if (
     s.startsWith("warming") || s === "waiting_p0" || s === "stale_feed" ||
     s === "no_book" || s === "one_sided_book" || s === "stale_book" ||
+    s === "disabled" ||
     s.startsWith("thin_best") || s.startsWith("wide_spread") ||
     s.startsWith("early") || s.startsWith("late") || s.startsWith("filtered")
   ) return "pending";
@@ -182,9 +184,13 @@ function renderSummary(status) {
   $("control-dot").className = "control-dot " + (active ? "stopped" : "running");
   $("control-label").textContent = active ? "策略已停止" : "策略运行中";
   const assetLabel = names.join("/") || "BTC/ETH";
+  const modes = status.asset_modes || {};
+  const modeText = names.length
+    ? names.map((a) => `${a} ${modes[a] === "live" ? "实盘" : "纸盘"}`).join(" · ")
+    : "纸盘";
   $("control-meta").textContent = active
     ? (status.killswitch?.reason || "手动停止")
-    : "纸盘 · 自动扫描 " + assetLabel + " 5m 窗口";
+    : modeText + " · 自动扫描 " + assetLabel + " 5m 窗口";
   const assetSub = $("asset-sub");
   if (assetSub) assetSub.textContent = (names.join(" / ") || "BTC / ETH") + " 5m 窗口";
   $("stop-btn").hidden = active;
@@ -216,11 +222,15 @@ function fairDetail(detail) {
   return `<div class="fair-detail">模型：预期结算 TWAP ${fmt(detail.e_close, 2)} · 剩余标准差 ${fmt(detail.sd, 5)} · z=${fmt(detail.z, 2)} · 已观测 ${fmt(detail.observed_s, 0)}s / 剩余 ${fmt(detail.remaining_s, 0)}s</div>`;
 }
 
-function assetCard(asset, data) {
+function modeBadge(mode) {
+  return `<span class="badge ${mode === "live" ? "live" : "paper"}">${mode === "live" ? "实盘" : "纸盘"}</span>`;
+}
+
+function assetCard(asset, data, mode) {
   if (!data || !data.window) {
     return `<div class="price-card">
       <div class="price-head">
-        <div class="price-title">${esc(asset)}</div>
+        <div class="price-title">${esc(asset)} ${modeBadge(mode)}</div>
         <span class="badge ${statusClass(data && data.status)}">${esc(statusLabel(data && data.status))}</span>
       </div>
       <div class="no-data">等待 Gamma 发现 5 分钟窗口…</div>
@@ -247,6 +257,8 @@ function assetCard(asset, data) {
     ? data.time_left
     : Number(w.end_ts) - Date.now() / 1000;
   const position = data.position;
+  const enabled = !data.params || data.params.trading_enabled !== false;
+  const disabledBadge = enabled ? "" : '<span class="badge pending">交易已关闭</span>';
 
   const rows = cands.length
     ? cands.map((c) => {
@@ -281,10 +293,10 @@ function assetCard(asset, data) {
       </div>`
     : '<div class="no-data">本窗口未持仓</div>';
 
-  return `<div class="price-card">
+  return `<div class="price-card${enabled ? "" : " trading-disabled"}">
     <div class="price-head">
       <div>
-        <div class="price-title">${esc(asset)} <span class="muted">${esc(w.slug || "")}</span></div>
+        <div class="price-title">${esc(asset)} ${modeBadge(mode)} ${disabledBadge} <span class="muted">${esc(w.slug || "")}</span></div>
         <div class="muted" style="font-size:11px;margin-top:2px">开盘基准来源：${esc(p0SourceLabel(w.p0_source || data.p0_source))}</div>
       </div>
       <div class="text-right">
@@ -332,8 +344,9 @@ function assetCard(asset, data) {
 function renderAssets(status) {
   const el = $("asset-grid");
   const assets = (status && status.assets) || {};
+  const modes = (status && status.asset_modes) || {};
   el.innerHTML = assetNames(status)
-    .map((asset) => assetCard(asset, assets[asset] || null))
+    .map((asset) => assetCard(asset, assets[asset] || null, modes[asset] || "paper"))
     .join("");
 }
 

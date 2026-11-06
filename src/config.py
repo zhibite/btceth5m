@@ -13,7 +13,7 @@ import os
 import tomllib
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
@@ -143,6 +143,14 @@ class StrategyParams(BaseModel):
     min_sigma_samples: int = Field(120, ge=30, le=3000)
     engine_tick_s: float = Field(0.5, ge=0.1, le=60.0)
     signal_log_min_edge: float = Field(0.02, ge=0.0, le=1.0)
+
+    # Execution mode for this asset. "live" is only honoured when the process
+    # runs with LIVE_ENABLED=true and PAPER_TRADING=false; otherwise the router
+    # forces paper and the config page shows the reason.
+    trading_mode: Literal["paper", "live"] = "paper"
+    # Whether this asset may open new positions. Open positions always settle
+    # normally; disabling only stops new entries.
+    trading_enabled: bool = True
 
     # Maker shadow: simulate a maker-first policy next to the real taker
     # paper fill. It never changes the paper position or PnL; it only records

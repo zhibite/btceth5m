@@ -2,8 +2,9 @@
 
 Paper mode does not import this module's dependencies. Live order placement
 is intentionally guarded: it requires LIVE_ENABLED=true, PAPER_TRADING=false,
-and the optional `py-clob-client-v2` package. The exact order call must be
-validated with a tiny real order before it is trusted.
+a per-asset ``trading_mode="live"``, and the optional `py-clob-client-v2`
+package. The exact order call must be validated with a tiny real order before
+it is trusted; see docs/LIVE_READINESS.md for the remaining gaps.
 """
 from __future__ import annotations
 
@@ -24,6 +25,26 @@ class LiveBroker:
     @property
     def enabled(self) -> bool:
         return bool(self.settings.live_enabled and not self.settings.paper_trading)
+
+    @property
+    def configured(self) -> bool:
+        """Whether the minimum signing credential is present.
+
+        The config page uses this only to show the live lock early; the real
+        validation happens in :meth:`_ensure_client` when the first order is
+        placed.
+        """
+        return bool(self.settings.wallet_private_key)
+
+    @property
+    def order_placement_ready(self) -> bool:
+        """False until :meth:`buy` actually posts to the CLOB.
+
+        Keeping this explicit lets the router show "configured live, running
+        paper" instead of discovering the scaffold only when the first order
+        raises. Flip it together with the real order implementation.
+        """
+        return False
 
     def _ensure_client(self) -> Any:
         if not self.enabled:

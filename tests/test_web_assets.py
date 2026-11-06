@@ -27,7 +27,27 @@ class _FakeDB:
         self.data[key] = value
 
 
-def _client(tmp_path):
+class _FakeRouter:
+    """Minimal stand-in for BrokerRouter in the HTTP layer tests."""
+
+    def __init__(self, runtime, live_available=False):
+        self.runtime = runtime
+        self.live_available = live_available
+        self.live_lock_reason = "" if live_available else "live_disabled"
+
+    @property
+    def mode(self):
+        modes = {self.mode_for(a) for a in ("BTC", "ETH")}
+        return "live" if "live" in modes else "paper"
+
+    def configured_mode(self, asset):
+        return self.runtime.params_for(asset).trading_mode
+
+    def mode_for(self, asset):
+        return self.configured_mode(asset) if self.live_available else "paper"
+
+
+def _client(tmp_path, live_available=False):
     db = Database(tmp_path / "web.db")
     runtime = RuntimeConfig(
         _FakeDB(),
@@ -37,7 +57,7 @@ def _client(tmp_path):
         settings=SimpleNamespace(assets_list=["BTC", "ETH"]),
         runtime=runtime,
         db=db,
-        router=SimpleNamespace(mode="paper"),
+        router=_FakeRouter(runtime, live_available),
         killswitch=SimpleNamespace(to_dict=lambda: {"active": False}),
         engine=SimpleNamespace(latest={}),
         rtds=SimpleNamespace(health=lambda: {}),
@@ -149,6 +169,104 @@ def test_config_api_rejects_bad_value(tmp_path):
     )
     assert r.status_code == 400
     assert r.json()["detail"]
+
+
+def test_config_page_has_no_global_selector(tmp_path):
+    client, _, _ = _client(tmp_path)
+    html = client.get("/config").text
+    assert "asset-select" not in html
+    assert "全局默认" not in html
+    assert 'id="asset-cards"' in html
+
+
+def test_config_assets_returns_one_card_per_asset(tmp_path):
+    client, _, _ = _client(tmp_path)
+    body = client.get("/api/config/assets").json()
+    assert body["assets"] == ["BTC", "ETH"]
+    assert [card["asset"] for card in body["cards"]] == ["BTC", "ETH"]
+    assert body["live_available"] is False
+    assert body["live_lock_reason"] == "live_disabled"
+    btc = body["cards"][0]
+    assert btc["source"] == "asset_default"
+    assert btc["overridden"] is False
+    assert btc["params"]["trading_mode"] == "paper"
+    assert btc["configured_mode"] == "paper"
+    assert btc["effective_mode"] == "paper"
+    eth = body["cards"][1]
+    assert eth["source"] == "global"
+    assert eth["params"]["entry_min_rel_s"] != 180
+
+
+def test_live_mode_can_be_saved_but_stays_paper_while_locked(tmp_path):
+    client, runtime, _ = _client(tmp_path)
+    r = client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"trading_mode": "live"}},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["params"]["trading_mode"] == "live"
+    assert body["configured_mode"] == "live"
+    # The preference is saved, but execution stays on paper until the server
+    # gates open.
+    assert body["effective_mode"] == "paper"
+    assert body["asset_modes"] == {"BTC": "paper", "ETH": "paper"}
+    assert body["configured_modes"] == {"BTC": "live", "ETH": "paper"}
+    assert runtime.params_for("BTC").trading_mode == "live"
+
+
+def test_trading_can_be_toggled_per_asset(tmp_path):
+    client, runtime, _ = _client(tmp_path)
+    r = client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"trading_enabled": False}},
+    )
+    assert r.status_code == 200
+    assert r.json()["params"]["trading_enabled"] is False
+    assert runtime.params_for("BTC").trading_enabled is False
+    assert runtime.params_for("ETH").trading_enabled is True
+
+    cards = client.get("/api/config/assets").json()["cards"]
+    by_asset = {card["asset"]: card for card in cards}
+    assert by_asset["BTC"]["params"]["trading_enabled"] is False
+    assert by_asset["ETH"]["params"]["trading_enabled"] is True
+
+    reset = client.post("/api/config/reset", json={"asset": "BTC"}).json()
+    assert reset["params"]["trading_enabled"] is True
+
+
+def test_live_mode_saves_per_asset_when_available(tmp_path):
+    client, runtime, _ = _client(tmp_path, live_available=True)
+    r = client.put(
+        "/api/config",
+        json={
+            "asset": "BTC",
+            "params": {"trading_mode": "live", "max_position_usd": 3.0},
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["params"]["trading_mode"] == "live"
+    assert body["configured_mode"] == "live"
+    assert body["effective_mode"] == "live"
+    assert body["asset_modes"] == {"BTC": "live", "ETH": "paper"}
+    assert body["configured_modes"] == {"BTC": "live", "ETH": "paper"}
+    assert runtime.params_for("BTC").trading_mode == "live"
+    assert runtime.params_for("ETH").trading_mode == "paper"
+
+    reset = client.post("/api/config/reset", json={"asset": "BTC"}).json()
+    assert reset["params"]["trading_mode"] == "paper"
+    assert reset["effective_mode"] == "paper"
+    assert runtime.params_for("BTC").trading_mode == "paper"
+
+
+def test_config_api_rejects_unknown_trading_mode(tmp_path):
+    client, _, _ = _client(tmp_path, live_available=True)
+    r = client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"trading_mode": "yolo"}},
+    )
+    assert r.status_code == 400
 
 
 def test_pnl_api_filters_by_asset(tmp_path):

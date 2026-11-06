@@ -26,6 +26,9 @@ PASSWORD = ""
 SESSION_TTL_S = 604800
 
 [EXECUTION]
+# Global live gates. Per-asset paper/live mode is saved from the config page
+# (strategy param TRADING_MODE, persisted in SQLite), but it only takes effect
+# when LIVE_ENABLED=true AND PAPER_TRADING=false.
 PAPER_TRADING = true
 LIVE_ENABLED = false
 

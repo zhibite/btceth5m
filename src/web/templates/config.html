@@ -26,26 +26,21 @@
   <div class="page-head">
     <div>
       <h1>策略配置</h1>
-      <div class="page-sub">选择币种单独覆盖参数；未覆盖的字段继承该币种默认或全局默认</div>
+      <div class="page-sub">BTC / ETH 独立配置；每个币种可单独开关交易，并选择纸盘或实盘</div>
     </div>
     <div class="head-meta">
-      <label class="config-asset">币种
-        <select id="asset-select" class="market-select"></select>
-      </label>
-      <div>当前模式：<b id="mode">--</b> · <span id="override-state">--</span></div>
+      <div>实盘通道：<b id="live-state">--</b></div>
+      <div id="live-lock" class="muted"></div>
     </div>
   </div>
 
-  <div id="groups"><div class="no-data">加载中...</div></div>
-
-  <div class="save-bar">
-    <span class="save-msg muted" id="save-msg">没有待保存的修改</span>
-    <button class="btn btn-ghost" id="reset-btn" type="button">恢复默认</button>
-    <button class="btn btn-primary" id="save-btn" type="button" disabled>保存配置</button>
+  <div id="live-banner"></div>
+  <div id="asset-cards" class="asset-config-grid">
+    <div class="no-data">加载中...</div>
   </div>
 </div>
 
-<footer>BTCETH5M</footer>
+<footer>BTCETH5M · 配置保存后下一 tick 生效 · 时间均为 UTC</footer>
 
 <script src="/static/auth-nav.js?v=__ASSET_VERSION__"></script>
 <script src="/static/config.js?v=__ASSET_VERSION__"></script>
