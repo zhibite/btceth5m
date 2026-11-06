@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.config import RuntimeConfig, get_asset_strategy_defaults
+from src.config import RuntimeConfig, StrategyParams, get_asset_strategy_defaults
 from src.strategy.engine import StrategyEngine
 
 
@@ -103,11 +103,67 @@ def test_asset_defaults_merge_over_global_and_reset():
     assert runtime.params_for("BTC").min_fair == 0.65
 
 
-def test_tick_interval_honours_fastest_asset_override():
+def test_common_fields_always_follow_global_with_asset_override():
     db = _FakeDB()
     runtime = RuntimeConfig(db)
+    runtime.update({"min_edge": 0.12}, asset="BTC")
+
+    # taker_fee_rate is a common field: a per-asset update is ignored.
+    runtime.update({"taker_fee_rate": 0.09}, asset="BTC")
+    assert runtime.params_for("BTC").taker_fee_rate == runtime.params.taker_fee_rate
+
+    runtime.update({"taker_fee_rate": 0.05})
+    assert runtime.params_for("BTC").taker_fee_rate == 0.05
+    assert runtime.params_for("ETH").taker_fee_rate == 0.05
+    # The per-asset field is still independent.
+    assert runtime.params_for("BTC").min_edge == 0.12
+    assert runtime.params_for("ETH").min_edge == runtime.params.min_edge
+
+
+def test_common_only_asset_patch_does_not_create_override():
+    db = _FakeDB()
+    runtime = RuntimeConfig(db)
+    runtime.update({"taker_fee_rate": 0.05}, asset="BTC")
+    assert not runtime.has_override("BTC")
+
+
+def test_stale_common_value_in_asset_snapshot_is_ignored():
+    db = _FakeDB()
+    runtime = RuntimeConfig(db)
+    runtime.update({"min_edge": 0.12}, asset="BTC")
+
+    # Simulate a snapshot written before the common/per-asset split.
+    snapshot = runtime.asset_params["BTC"].model_dump()
+    snapshot["taker_fee_rate"] = 0.15
+    runtime.asset_params["BTC"] = StrategyParams.model_validate(snapshot)
+
+    assert runtime.params_for("BTC").taker_fee_rate == runtime.params.taker_fee_rate
+    assert runtime.params_for("BTC").taker_fee_rate != 0.15
+
+
+def test_reset_common_keeps_asset_overrides_and_other_global_values():
+    db = _FakeDB()
+    runtime = RuntimeConfig(db)
+    defaults = runtime._defaults
+
+    runtime.update({"min_edge": 0.12}, asset="BTC")
+    runtime.update({"taker_fee_rate": 0.05, "min_edge": 0.09})
+    runtime.reset_common()
+
+    assert runtime.params.taker_fee_rate == defaults.taker_fee_rate
+    assert runtime.params.min_edge == 0.09
+    assert runtime.params_for("BTC").min_edge == 0.12
+
+
+def test_tick_interval_uses_common_setting():
+    db = _FakeDB()
+    runtime = RuntimeConfig(db)
+    # engine_tick_s is common: per-asset updates are ignored.
     runtime.update({"engine_tick_s": 1.0}, asset="BTC")
     runtime.update({"engine_tick_s": 0.2}, asset="ETH")
+    assert runtime.params_for("BTC").engine_tick_s == runtime.params.engine_tick_s
+
+    runtime.update({"engine_tick_s": 0.2})
     engine = SimpleNamespace(
         settings=SimpleNamespace(assets_list=["BTC", "ETH"]),
         runtime=runtime,

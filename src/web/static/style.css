@@ -347,12 +347,19 @@ dialog.modal[open] { animation: modal-in .18s ease-out; }
 .badge.paper { background: #1e1b4b; color: #a78bfa; }
 .badge.live { background: #450a0a; color: #f87171; }
 
+#common-card { margin-bottom: 18px; }
+
 .asset-config-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
   gap: 18px;
   align-items: start;
 }
+.common-config-card {
+  border-color: #2a2a4a;
+  background: linear-gradient(135deg, #15152f 0%, #12122a 60%);
+}
+.common-config-card .asset-symbol { font-size: 18px; }
 .asset-config-card {
   background: #12122a;
   border: 1px solid #1e1e3a;

@@ -186,6 +186,10 @@ def test_config_assets_returns_one_card_per_asset(tmp_path):
     assert [card["asset"] for card in body["cards"]] == ["BTC", "ETH"]
     assert body["live_available"] is False
     assert body["live_lock_reason"] == "live_disabled"
+    assert "taker_fee_rate" in body["common_fields"]
+    assert "min_edge" in body["per_asset_fields"]
+    assert "min_edge" not in body["common_fields"]
+    assert body["common_params"]["taker_fee_rate"] == 0.07
     btc = body["cards"][0]
     assert btc["source"] == "asset_default"
     assert btc["overridden"] is False
@@ -195,6 +199,50 @@ def test_config_assets_returns_one_card_per_asset(tmp_path):
     eth = body["cards"][1]
     assert eth["source"] == "global"
     assert eth["params"]["entry_min_rel_s"] != 180
+
+
+def test_common_config_update_applies_to_every_asset(tmp_path):
+    client, runtime, _ = _client(tmp_path)
+    client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"min_edge": 0.11}},
+    )
+
+    r = client.put("/api/config", json={"params": {"taker_fee_rate": 0.05}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["common_params"]["taker_fee_rate"] == 0.05
+    assert runtime.params_for("BTC").taker_fee_rate == 0.05
+    assert runtime.params_for("ETH").taker_fee_rate == 0.05
+    assert runtime.params_for("BTC").min_edge == 0.11
+
+    # A common field cannot be overridden per asset.
+    client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"taker_fee_rate": 0.09}},
+    )
+    assert runtime.params_for("BTC").taker_fee_rate == 0.05
+    assert runtime.params_for("ETH").taker_fee_rate == 0.05
+
+
+def test_reset_common_keeps_per_asset_overrides(tmp_path):
+    client, runtime, _ = _client(tmp_path)
+    client.put(
+        "/api/config",
+        json={"asset": "BTC", "params": {"min_edge": 0.11}},
+    )
+    client.put(
+        "/api/config",
+        json={"params": {"taker_fee_rate": 0.05, "min_edge": 0.09}},
+    )
+
+    r = client.post("/api/config/reset", json={"scope": "common"})
+    assert r.status_code == 200
+    default_fee = runtime._defaults.taker_fee_rate
+    assert runtime.params.taker_fee_rate == default_fee
+    assert runtime.params.min_edge == 0.09
+    assert runtime.params_for("BTC").min_edge == 0.11
+    assert runtime.params_for("BTC").taker_fee_rate == default_fee
 
 
 def test_live_mode_can_be_saved_but_stays_paper_while_locked(tmp_path):

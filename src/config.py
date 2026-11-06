@@ -161,6 +161,30 @@ class StrategyParams(BaseModel):
     maker_chase_bid: bool = True
 
 
+# Parameters that describe the engine, the protocol, the shared fair-value
+# model or the maker-shadow experiment rather than one coin's trading stance.
+# They always come from the global params: a per-asset override may still be
+# stored (and is what the config page shows for other fields), but these
+# fields are ignored there so there is only one source of truth.
+COMMON_PARAM_FIELDS: tuple[str, ...] = (
+    "max_stale_book_s",
+    "min_order_shares",
+    "taker_fee_rate",
+    "sigma_lookback_s",
+    "min_sigma_samples",
+    "engine_tick_s",
+    "signal_log_min_edge",
+    "maker_shadow_enabled",
+    "maker_buffer",
+    "maker_fallback_rel_s",
+    "maker_chase_bid",
+)
+
+PER_ASSET_PARAM_FIELDS: tuple[str, ...] = tuple(
+    name for name in StrategyParams.model_fields if name not in COMMON_PARAM_FIELDS
+)
+
+
 def _toml_settings() -> dict[str, Any]:
     g, f, w, e = (
         _section("GENERAL"),
@@ -240,6 +264,7 @@ def get_asset_strategy_defaults() -> dict[str, dict[str, Any]]:
             str(key).lower(): value
             for key, value in section.items()
             if str(key).lower() in known
+            and str(key).lower() not in COMMON_PARAM_FIELDS
         }
         if not values:
             continue
@@ -302,13 +327,32 @@ class RuntimeConfig:
                 pass
         return default
 
+    def _apply_common(self, params: StrategyParams) -> StrategyParams:
+        """Force shared fields back to the global values.
+
+        Existing per-asset snapshots may contain the shared fields (they were
+        saved before the common/per-asset split, or by an older client). The
+        config page treats those fields as global-only, so ignore the snapshot
+        copies here and keep a single source of truth.
+        """
+        if params is self.params:
+            return params
+        values = params.model_dump()
+        changed = False
+        for name in COMMON_PARAM_FIELDS:
+            global_value = getattr(self.params, name)
+            if values.get(name) != global_value:
+                values[name] = global_value
+                changed = True
+        return StrategyParams.model_validate(values) if changed else params
+
     def params_for(self, asset: str | None) -> StrategyParams:
         if not asset:
             return self.params
         key = str(asset).upper()
         override = self.asset_params.get(key)
         if override is not None:
-            return override
+            return self._apply_common(override)
         extra = self.asset_defaults.get(key)
         if not extra:
             return self.params
@@ -319,7 +363,7 @@ class RuntimeConfig:
             return cached[1]
         merged = self.params.model_dump()
         merged.update(extra)
-        params = StrategyParams.model_validate(merged)
+        params = self._apply_common(StrategyParams.model_validate(merged))
         self._effective[key] = (self.params, params)
         return params
 
@@ -354,6 +398,16 @@ class RuntimeConfig:
         self, patch: dict[str, Any], asset: str | None = None
     ) -> StrategyParams:
         key = str(asset).upper() if asset else None
+        if key:
+            # Shared fields are global-only; ignore them in an asset patch so
+            # a stale client cannot diverge one coin from the common panel.
+            patch = {
+                name: value
+                for name, value in patch.items()
+                if name not in COMMON_PARAM_FIELDS
+            }
+            if not patch:
+                return self.params_for(key)
         merged = self.params_for(key).model_dump()
         for name, value in patch.items():
             if name in merged:
@@ -375,6 +429,19 @@ class RuntimeConfig:
             self._save_assets()
             return self.params_for(key)
         self.params = self._defaults
+        if self._db is not None:
+            self._db.set_setting(self.KEY, self.params.model_dump_json())
+        return self.params
+
+    def reset_common(self) -> StrategyParams:
+        """Reset only the shared fields to their config defaults.
+
+        Non-common global values and every per-asset override are preserved.
+        """
+        values = self.params.model_dump()
+        for name in COMMON_PARAM_FIELDS:
+            values[name] = getattr(self._defaults, name)
+        self.params = StrategyParams.model_validate(values)
         if self._db is not None:
             self._db.set_setting(self.KEY, self.params.model_dump_json())
         return self.params

@@ -33,6 +33,10 @@ PAPER_TRADING = true
 LIVE_ENABLED = false
 
 [STRATEGY]
+# Global defaults. Fields in src.config.COMMON_PARAM_FIELDS (fee, sigma,
+# engine tick, signal logging, book freshness, min order size, maker shadow)
+# are always read from this table, even when an asset has its own override.
+# The config page edits them in the shared "通用设置" card.
 # Entry requires: fair - executable_ask - fee >= MIN_EDGE + MODEL_BUFFER
 MIN_EDGE = 0.05
 MODEL_BUFFER = 0.02
@@ -65,7 +69,8 @@ MAKER_CHASE_BID = true
 # ── Per-asset defaults ──────────────────────────────────────────────────
 # Partial overrides merged over [STRATEGY]. Fields not listed inherit the
 # current global value; the dashboard can still save a per-asset override on
-# top of these (stored in SQLite).
+# top of these (stored in SQLite). Only per-coin fields belong here: common
+# fields (see COMMON_PARAM_FIELDS) are ignored in a per-asset table.
 [STRATEGY.BTC]
 # Paper results (Berlin 29 + Dublin 14 settled positions, 2026-11-06):
 # all live entries were at rel 60-120s, while the backtest's edge lives at

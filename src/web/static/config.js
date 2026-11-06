@@ -53,6 +53,8 @@ const GROUPS = [
 
 let DATA = null;
 const INITIAL = new Map(); // asset -> params snapshot (including trading_mode)
+let COMMON_FIELDS = new Set();
+let COMMON_INITIAL = {};
 
 const SOURCE_LABELS = {
   override: "已单独设置",
@@ -158,6 +160,23 @@ function enabledToggleHtml(enabled) {
   </label>`;
 }
 
+function isCommonField(key) {
+  return COMMON_FIELDS.has(key);
+}
+
+function groupsHtml(scope, params) {
+  return GROUPS.map((group) => {
+    const fields = group.fields.filter((f) =>
+      scope === "common" ? isCommonField(f.key) : !isCommonField(f.key)
+    );
+    if (!fields.length) return "";
+    return `<div class="config-group">
+      <h3><span class="dot"></span>${esc(group.title)}<span class="count">${fields.length} 项</span></h3>
+      <div class="config-grid">${fields.map((f) => fieldHtml(f, params[f.key])).join("")}</div>
+    </div>`;
+  }).join("");
+}
+
 function cardHtml(card) {
   const asset = card.asset;
   const params = card.params || {};
@@ -177,14 +196,30 @@ function cardHtml(card) {
       </div>
     </div>
     <div class="mode-note" data-role="mode-note">${modeNoteHtml(mode, enabled)}</div>
-    ${GROUPS.map((group) => `<div class="config-group">
-      <h3><span class="dot"></span>${esc(group.title)}<span class="count">${group.fields.length} 项</span></h3>
-      <div class="config-grid">${group.fields.map((f) => fieldHtml(f, params[f.key])).join("")}</div>
-    </div>`).join("")}
+    ${groupsHtml("asset", params)}
     <div class="asset-config-actions">
       <span class="save-msg muted" data-role="msg">没有待保存的修改</span>
       <button class="btn btn-ghost" type="button" data-action="reset"${card.overridden ? "" : " disabled"}>恢复默认</button>
       <button class="btn btn-primary" type="button" data-action="save" disabled>保存 ${esc(asset)}</button>
+    </div>
+  </section>`;
+}
+
+function commonCardHtml() {
+  const params = DATA.common_params || {};
+  return `<section class="asset-config-card common-config-card" data-scope="common">
+    <div class="asset-config-head">
+      <div class="asset-config-title">
+        <span class="asset-symbol">通用设置</span>
+        <span class="badge paper">BTC / ETH 共享</span>
+      </div>
+    </div>
+    <div class="mode-note"><span class="muted">费率、σ、引擎节奏、盘口新鲜度与 maker 影子等所有币种共用的参数；修改后保存即对所有币种生效。</span></div>
+    ${groupsHtml("common", params)}
+    <div class="asset-config-actions">
+      <span class="save-msg muted" data-role="msg">没有待保存的修改</span>
+      <button class="btn btn-ghost" type="button" data-action="reset">恢复通用默认</button>
+      <button class="btn btn-primary" type="button" data-action="save" disabled>保存通用设置</button>
     </div>
   </section>`;
 }
@@ -208,8 +243,24 @@ function renderLiveState() {
   }
 }
 
+function renderCommon() {
+  const el = $("common-card");
+  if (!el) return;
+  if (!COMMON_FIELDS.size) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = commonCardHtml();
+  const cardEl = el.querySelector(".common-config-card");
+  COMMON_INITIAL = Object.assign({}, DATA.common_params || {});
+  bindCommon(cardEl);
+  updateCommonState(cardEl);
+}
+
 function render() {
+  COMMON_FIELDS = new Set(DATA.common_fields || []);
   renderLiveState();
+  renderCommon();
   const cards = DATA.cards || [];
   const wrap = $("asset-cards");
   if (!cards.length) {
@@ -327,6 +378,97 @@ function bindCard(cardEl) {
   cardEl.querySelector('[data-action="save"]').addEventListener("click", () => saveCard(cardEl));
   cardEl.querySelector('[data-action="reset"]').addEventListener("click", () => resetCard(cardEl));
   updateCardState(cardEl);
+}
+
+/* ── Common settings card ─────────────────────────────────────────────── */
+function commonParams(cardEl) {
+  const params = {};
+  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+    params[el.dataset.key] = el.type === "checkbox" ? el.checked : Number(el.value);
+  });
+  return params;
+}
+
+function syncCommonToCards(params) {
+  const values = {};
+  (DATA.common_fields || []).forEach((key) => { values[key] = params[key]; });
+  (DATA.cards || []).forEach((card) => {
+    if (card.params) Object.assign(card.params, values);
+  });
+  Object.assign(DATA.common_params || {}, values);
+}
+
+function updateCommonState(cardEl) {
+  let changed = 0;
+  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+    const diff = fieldChanged(el, COMMON_INITIAL[el.dataset.key]);
+    const box = el.closest(".field");
+    if (box) box.classList.toggle("changed", diff);
+    if (diff) changed += 1;
+  });
+  cardEl.querySelector('[data-action="save"]').disabled = changed === 0;
+  cardEl.querySelector('[data-role="msg"]').textContent = changed
+    ? changed + " 项待保存"
+    : "没有待保存的修改";
+}
+
+function applyCommonParams(cardEl, params) {
+  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+    const value = params[el.dataset.key];
+    if (el.type === "checkbox") el.checked = Boolean(value);
+    else el.value = value;
+    const box = el.closest(".field");
+    if (box) box.classList.remove("changed");
+  });
+  COMMON_INITIAL = Object.assign({}, params);
+  syncCommonToCards(params);
+  updateCommonState(cardEl);
+}
+
+function bindCommon(cardEl) {
+  if (!cardEl) return;
+  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+    el.addEventListener("input", () => updateCommonState(cardEl));
+    el.addEventListener("change", () => updateCommonState(cardEl));
+  });
+  cardEl.querySelector('[data-action="save"]').addEventListener("click", () => saveCommon(cardEl));
+  cardEl.querySelector('[data-action="reset"]').addEventListener("click", () => resetCommon(cardEl));
+  updateCommonState(cardEl);
+}
+
+async function saveCommon(cardEl) {
+  const btn = cardEl.querySelector('[data-action="save"]');
+  const msg = cardEl.querySelector('[data-role="msg"]');
+  btn.disabled = true;
+  msg.textContent = "保存中...";
+  try {
+    const params = commonParams(cardEl);
+    const res = await sendJSON("/api/config", "PUT", { params });
+    DATA.common_params = Object.assign({}, res.params);
+    applyCommonParams(cardEl, res.params);
+    msg.textContent = "已保存（通用设置）";
+    setTimeout(() => updateCommonState(cardEl), 3000);
+  } catch (e) {
+    if (String(e.message) === "auth") return;
+    msg.textContent = "保存失败：" + e.message;
+    btn.disabled = false;
+  }
+}
+
+async function resetCommon(cardEl) {
+  if (!confirm("恢复通用设置为默认值？币种的独立参数不会被删除。")) return;
+  const msg = cardEl.querySelector('[data-role="msg"]');
+  msg.textContent = "恢复中...";
+  try {
+    const res = await sendJSON("/api/config/reset", "POST", { scope: "common" });
+    DATA.common_params = Object.assign({}, res.params);
+    applyCommonParams(cardEl, res.params);
+    msg.textContent = "已恢复通用默认";
+    setTimeout(() => updateCommonState(cardEl), 3000);
+  } catch (e) {
+    if (String(e.message) === "auth") return;
+    msg.textContent = "恢复失败：" + e.message;
+  }
 }
 
 async function saveCard(cardEl) {

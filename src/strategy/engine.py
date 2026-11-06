@@ -157,19 +157,8 @@ class StrategyEngine:
             await asyncio.sleep(self._tick_interval())
 
     def _tick_interval(self) -> float:
-        """One loop drives every asset, so honour the fastest per-asset tick.
-
-        ``engine_tick_s`` is the only knob exposed in the per-asset config that
-        is not applied inside the per-asset branch of :meth:`tick`; taking the
-        minimum means an override on any asset actually changes the cadence.
-        """
-        values = [
-            self.runtime.params_for(asset).engine_tick_s
-            for asset in self.settings.assets_list
-        ]
-        if not values:
-            values = [self.runtime.params.engine_tick_s]
-        return max(0.1, min(values))
+        """One loop drives every asset; ``engine_tick_s`` is a shared setting."""
+        return max(0.1, float(self.runtime.params.engine_tick_s))
 
     async def _settle_loop(self) -> None:
         while self._running:

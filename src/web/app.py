@@ -23,7 +23,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
-from src.config import StrategyParams
+from src.config import (
+    COMMON_PARAM_FIELDS,
+    PER_ASSET_PARAM_FIELDS,
+    StrategyParams,
+)
 from src.execution.maker_shadow import summarize_shadow
 from src.infra.logging import get_logger
 from src.web import auth
@@ -476,6 +480,7 @@ def _config_payload(state: Any, key: str | None, params: Any) -> dict[str, Any]:
     return {
         "params": params.model_dump(),
         "global_params": state.runtime.params.model_dump(),
+        "common_params": state.runtime.params.model_dump(),
         "asset_defaults": {
             asset: dict(values) for asset, values in state.runtime.asset_defaults.items()
         },
@@ -485,6 +490,8 @@ def _config_payload(state: Any, key: str | None, params: Any) -> dict[str, Any]:
         "overridden": bool(key and state.runtime.has_override(key)),
         "configured_mode": configured,
         "effective_mode": _asset_modes(state).get(key or "", configured),
+        "common_fields": list(COMMON_PARAM_FIELDS),
+        "per_asset_fields": list(PER_ASSET_PARAM_FIELDS),
         **_mode_state(state),
     }
 
@@ -521,6 +528,9 @@ async def api_config_assets(_: None = Depends(require_login)) -> dict:
     return {
         "assets": state.settings.assets_list,
         "cards": cards,
+        "common_params": state.runtime.params.model_dump(),
+        "common_fields": list(COMMON_PARAM_FIELDS),
+        "per_asset_fields": list(PER_ASSET_PARAM_FIELDS),
         **_mode_state(state),
     }
 
@@ -553,7 +563,12 @@ async def api_reset_config(
     payload: dict[str, Any] | None = None, _: None = Depends(require_login)
 ) -> dict:
     state = _get_state()
-    key = _asset_key((payload or {}).get("asset"))
+    body = payload or {}
+    if body.get("scope") == "common":
+        params = state.runtime.reset_common()
+        log.info("web.config_reset", asset="COMMON", mode=params.trading_mode)
+        return {"ok": True, **_config_payload(state, None, params)}
+    key = _asset_key(body.get("asset"))
     params = state.runtime.reset(key)
     log.info("web.config_reset", asset=key or "GLOBAL", mode=params.trading_mode)
     return {"ok": True, **_config_payload(state, key, params)}
