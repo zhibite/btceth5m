@@ -36,7 +36,8 @@ LIVE_ENABLED = false
 # Global defaults. Fields in src.config.COMMON_PARAM_FIELDS (fee, sigma,
 # engine tick, signal logging, book freshness, min order size, maker shadow)
 # are always read from this table, even when an asset has its own override.
-# The config page edits them in the shared "通用设置" card.
+# Most are edited in the shared "通用设置" card; the MAKER_* fields below are
+# config.toml-only (not rendered on the config page).
 # Entry requires: fair - executable_ask - fee >= MIN_EDGE + MODEL_BUFFER
 MIN_EDGE = 0.05
 MODEL_BUFFER = 0.02

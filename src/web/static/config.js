@@ -40,15 +40,6 @@ const GROUPS = [
       { key: "signal_log_min_edge", label: "信号记录阈值", help: "Edge 超过该值时记录未入场信号，便于复盘。", step: 0.01 },
     ],
   },
-  {
-    title: "Maker 影子",
-    fields: [
-      { key: "maker_shadow_enabled", label: "启用影子对比", type: "bool", help: "每次 taker 入场时并行模拟 maker-first 路径；只写统计，不改变实际成交。" },
-      { key: "maker_buffer", label: "Maker 安全边际", help: "挂在 bid 时额外要求的 edge，用来抵消被动成交的逆向选择。", step: 0.01 },
-      { key: "maker_fallback_rel_s", label: "转 Taker 时间", help: "窗口开始后多少秒仍未成交，就按当前 ask 模拟 taker fallback。", step: 5, unit: "秒" },
-      { key: "maker_chase_bid", label: "跟随买一", type: "bool", help: "买一上移时撤单改挂到新的 best bid；关闭则保持原价排队。" },
-    ],
-  },
 ];
 
 let DATA = null;
@@ -214,7 +205,7 @@ function commonCardHtml() {
         <span class="badge paper">BTC / ETH 共享</span>
       </div>
     </div>
-    <div class="mode-note"><span class="muted">费率、σ、引擎节奏、盘口新鲜度与 maker 影子等所有币种共用的参数；修改后保存即对所有币种生效。</span></div>
+    <div class="mode-note"><span class="muted">费率、σ、引擎节奏、信号记录与盘口新鲜度等所有币种共用的参数；修改后保存即对所有币种生效。</span></div>
     ${groupsHtml("common", params)}
     <div class="asset-config-actions">
       <span class="save-msg muted" data-role="msg">没有待保存的修改</span>

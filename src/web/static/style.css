@@ -347,7 +347,7 @@ dialog.modal[open] { animation: modal-in .18s ease-out; }
 .badge.paper { background: #1e1b4b; color: #a78bfa; }
 .badge.live { background: #450a0a; color: #f87171; }
 
-#common-card { margin-bottom: 18px; }
+#common-card { margin-top: 18px; }
 
 .asset-config-grid {
   display: grid;
