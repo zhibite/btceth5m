@@ -110,6 +110,7 @@ class PriceBuffer:
 
 class RtdsFeed:
     TOPIC = "crypto_prices_chainlink"
+    TWAP_TOPIC = "crypto_prices_twap_sixty"
 
     def __init__(
         self,
@@ -119,10 +120,16 @@ class RtdsFeed:
         reconnect_base_s: float = 1.0,
         reconnect_max_s: float = 30.0,
         latency=None,
+        on_message=None,
+        twap_topic: bool = False,
     ) -> None:
         self.assets = [a.upper() for a in assets]
         self.url = url
         self.latency = latency
+        # Optional recorder tap: called with (asset, recv_ts, raw_message)
+        # for every parsed RTDS message, before it reaches the price buffer.
+        self.on_message = on_message
+        self.twap_topic = bool(twap_topic)
         self.reconnect_base_s = float(reconnect_base_s)
         self.reconnect_max_s = float(reconnect_max_s)
         self.buffers = {a: PriceBuffer(buffer_s) for a in self.assets}
@@ -166,14 +173,18 @@ class RtdsFeed:
     async def _run_asset(self, asset: str) -> None:
         symbol = SYMBOLS.get(asset, f"{asset.lower()}/usd")
         filters = json.dumps({"symbol": symbol}, separators=(",", ":"))
+        topics = [self.TOPIC]
+        if self.twap_topic:
+            topics.append(self.TWAP_TOPIC)
         subscription = {
             "action": "subscribe",
             "subscriptions": [
                 {
-                    "topic": "crypto_prices_chainlink",
+                    "topic": topic,
                     "type": "update",
                     "filters": filters,
                 }
+                for topic in topics
             ],
         }
         delay = self.reconnect_base_s
@@ -218,10 +229,21 @@ class RtdsFeed:
             return
         if not isinstance(data, dict):
             return
+        recv_ts = float(recv_ts if recv_ts is not None else time.time())
+        if self.on_message is not None:
+            try:
+                self.on_message(asset, recv_ts, data)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rtds.tap_failed", asset=asset, error=repr(exc))
+        # The optional TWAP topic shares the connection but must never enter
+        # the raw-price buffer: two values per second would collide on
+        # timestamp and corrupt the settlement model.
+        topic = data.get("topic")
+        if topic is not None and str(topic) != self.TOPIC:
+            return
         payload = data.get("payload")
         if not isinstance(payload, dict):
             return
-        recv_ts = float(recv_ts if recv_ts is not None else time.time())
         buf = self.buffers[asset]
         if "data" in payload:
             for item in payload.get("data") or []:

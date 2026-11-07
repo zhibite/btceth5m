@@ -26,6 +26,7 @@ from src.infra.logging import configure_logging, get_logger
 from src.market.gamma import GammaClient
 from src.market.window_manager import WindowManager
 from src.persistence.db import Database
+from src.recording.recorder import Recorder
 from src.strategy.engine import StrategyEngine
 from src.strategy.risk import KillSwitch, RiskManager
 from src.web.app import app as web_app
@@ -49,6 +50,7 @@ class AppState:
     router: BrokerRouter
     engine: StrategyEngine
     latency: LatencyTracker
+    recorder: Any
     started_at: float
 
 
@@ -114,6 +116,40 @@ async def main() -> None:
         settings.assets_list,
         window_sec=settings.window_sec,
     )
+    books = ClobWsFeed(
+        settings.assets_list,
+        settings.clob_ws_url,
+        reconnect_base_s=settings.reconnect_base_s,
+        reconnect_max_s=settings.reconnect_max_s,
+    )
+    recorder = None
+    if settings.recording_enabled:
+        # Recording is auxiliary: a bad path or a full disk must not take the
+        # trading loop down with it.
+        try:
+            recorder = Recorder(
+                settings.recording_path,
+                settings.assets_list,
+                books=books,
+                windows=windows,
+                book_hz=settings.recording_book_hz,
+                book_levels=settings.recording_book_levels,
+                raw_clob=settings.recording_raw_clob,
+                compress=settings.recording_gzip,
+                retention_days=settings.recording_retention_days,
+                queue_size=settings.recording_queue_size,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "recorder.init_failed",
+                path=str(settings.recording_path),
+                error=repr(exc),
+            )
+            recorder = None
+        else:
+            books.on_trade = recorder.record_trade
+            if settings.recording_raw_clob:
+                books.on_message = recorder.record_raw_clob
     rtds = RtdsFeed(
         settings.assets_list,
         settings.rtds_url,
@@ -121,12 +157,8 @@ async def main() -> None:
         reconnect_base_s=settings.reconnect_base_s,
         reconnect_max_s=settings.reconnect_max_s,
         latency=latency,
-    )
-    books = ClobWsFeed(
-        settings.assets_list,
-        settings.clob_ws_url,
-        reconnect_base_s=settings.reconnect_base_s,
-        reconnect_max_s=settings.reconnect_max_s,
+        on_message=recorder.record_rtds if recorder is not None else None,
+        twap_topic=bool(recorder is not None and settings.recording_twap),
     )
     paper = PaperBroker(db, runtime)
     live = LiveBroker(settings) if settings.live_enabled else None
@@ -146,7 +178,14 @@ async def main() -> None:
         latency=latency,
         maker_shadow=maker_shadow,
     )
-    windows.on_window = engine.on_window
+    async def _on_window(asset: str, market: Any) -> None:
+        # Record discovery before the engine touches the market object, then
+        # let the strategy react. The recorder also samples late metadata.
+        if recorder is not None:
+            recorder.record_window(market)
+        await engine.on_window(asset, market)
+
+    windows.on_window = _on_window
 
     state = AppState(
         settings=settings,
@@ -162,6 +201,7 @@ async def main() -> None:
         router=router,
         engine=engine,
         latency=latency,
+        recorder=recorder,
         started_at=time.time(),
     )
 
@@ -176,10 +216,13 @@ async def main() -> None:
         live_lock_reason=router.live_lock_reason,
         live_enabled=settings.live_enabled,
         db=str(settings.db_path),
+        recording=str(settings.recording_path) if recorder is not None else None,
         web=f"{settings.web_host}:{settings.web_port}",
         params=runtime.params.model_dump(),
     )
 
+    if recorder is not None:
+        recorder.start()
     rtds.start()
     books.start()
     engine.start()
@@ -208,6 +251,8 @@ async def main() -> None:
         await windows.stop()
         await books.stop()
         await rtds.stop()
+        if recorder is not None:
+            await recorder.stop()
         latency.flush(force=True)
         await gamma.close()
         if web_task is not None:

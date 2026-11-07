@@ -16,6 +16,25 @@ PRICE_BUFFER_S = 900
 RECONNECT_BASE_S = 1.0
 RECONNECT_MAX_S = 30.0
 
+[RECORDING]
+# 实时录制策略看到的市场数据，用于回测/回放。录制器复用已经建立的
+# RTDS / CLOB WebSocket，不额外开连接；文件按小时轮转到 DATA_DIR/live。
+# 目录名和 payload 格式与 research/scripts/record_live.py 一致，
+# 可直接用 research/scripts/replay_book.py 回放。
+ENABLED = true
+# 留空 -> <DATA_DIR>/live；相对路径从仓库根目录解析。
+DIR = ""
+# 盘口快照频率与档位数。1 Hz / 5 档足够做成交模拟。
+BOOK_HZ = 1.0
+BOOK_LEVELS = 5
+# 原始 CLOB 消息每天可达数 GB；默认只存 1 Hz 快照。
+RAW_CLOB = false
+# 额外订阅官方 60s TWAP（结算变量），仅用于录制。
+TWAP = true
+# 已结束的小时压成 .jsonl.gz；保留天数 0 = 永久保留。
+GZIP = true
+RETENTION_DAYS = 14
+
 [WEB]
 # 127.0.0.1 is safe by default. To expose the dashboard set HOST="0.0.0.0"
 # and a non-empty PASSWORD (HTTP Basic auth).

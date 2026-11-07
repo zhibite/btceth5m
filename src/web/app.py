@@ -271,6 +271,11 @@ async def api_status(_: None = Depends(require_read)) -> dict:
                 "rtds": state.rtds.health(),
                 "clob": state.books.health(),
             },
+            "recording": (
+                state.recorder.health()
+                if getattr(state, "recorder", None) is not None
+                else None
+            ),
             "config": state.runtime.params.model_dump(),
         }
     )

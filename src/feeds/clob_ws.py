@@ -27,9 +27,16 @@ class ClobWsFeed:
         url: str,
         reconnect_base_s: float = 1.0,
         reconnect_max_s: float = 30.0,
+        on_trade=None,
+        on_message=None,
     ) -> None:
         self.assets = [a.upper() for a in assets]
         self.url = url
+        # Optional recorder taps. on_trade receives the normalized event that
+        # is also pushed to trade_events; on_message receives every parsed
+        # CLOB message for optional raw capture.
+        self.on_trade = on_trade
+        self.on_message = on_message
         self.reconnect_base_s = float(reconnect_base_s)
         self.reconnect_max_s = float(reconnect_max_s)
         self.books: dict[str, OrderBook] = {}
@@ -131,6 +138,11 @@ class ClobWsFeed:
         except (TypeError, ValueError):
             return
         self.last_msg_ts = time.time()
+        if self.on_message is not None:
+            try:
+                self.on_message(self.last_msg_ts, data)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("clob.tap_failed", error=repr(exc))
         items = data if isinstance(data, list) else [data]
         for item in items:
             if not isinstance(item, dict):
@@ -187,13 +199,17 @@ class ClobWsFeed:
                 exchange_ts = float(raw_ts) / 1000.0
         except (TypeError, ValueError):
             exchange_ts = None
-        self.trade_events.append(
-            {
-                "token_id": token,
-                "side": str(item.get("side") or "").upper(),
-                "price": price,
-                "size": size,
-                "ts": now,
-                "exchange_ts": exchange_ts,
-            }
-        )
+        event = {
+            "token_id": token,
+            "side": str(item.get("side") or "").upper(),
+            "price": price,
+            "size": size,
+            "ts": now,
+            "exchange_ts": exchange_ts,
+        }
+        self.trade_events.append(event)
+        if self.on_trade is not None:
+            try:
+                self.on_trade(event)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("clob.trade_tap_failed", error=repr(exc))

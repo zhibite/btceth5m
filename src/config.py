@@ -88,6 +88,17 @@ class AppSettings(BaseSettings):
     paper_trading: bool = True
     live_enabled: bool = False
 
+    # Market-data recording for backtest/replay (see src/recording/recorder.py).
+    recording_enabled: bool = True
+    recording_dir: str = ""  # empty -> <data_dir>/live
+    recording_book_hz: float = 1.0
+    recording_book_levels: int = 5
+    recording_raw_clob: bool = False
+    recording_twap: bool = True
+    recording_gzip: bool = True
+    recording_retention_days: int = 14
+    recording_queue_size: int = 50_000
+
     data_dir: str = str(ROOT / "data")
     log_level: str = "INFO"
 
@@ -111,6 +122,20 @@ class AppSettings(BaseSettings):
     @property
     def log_dir(self) -> Path:
         return Path(self.data_dir) / "logs"
+
+    @property
+    def recording_path(self) -> Path:
+        """Where hourly JSONL recordings are written.
+
+        An empty ``RECORDING_DIR`` uses ``<DATA_DIR>/live`` so the recordings
+        live on the same persistent volume as the SQLite database. Relative
+        paths are resolved from the repository root.
+        """
+        raw = str(self.recording_dir or "").strip()
+        path = Path(raw) if raw else Path(self.data_dir) / "live"
+        if not path.is_absolute():
+            path = ROOT / path
+        return path
 
 
 class StrategyParams(BaseModel):
@@ -192,6 +217,7 @@ def _toml_settings() -> dict[str, Any]:
         _section("WEB"),
         _section("EXECUTION"),
     )
+    r = _section("RECORDING")
     return {
         "assets": g.get("ASSETS", "BTC,ETH"),
         "window_sec": g.get("WINDOW_SEC", 300),
@@ -213,6 +239,15 @@ def _toml_settings() -> dict[str, Any]:
         "web_session_ttl_s": w.get("SESSION_TTL_S", 7 * 24 * 3600),
         "paper_trading": e.get("PAPER_TRADING", True),
         "live_enabled": e.get("LIVE_ENABLED", False),
+        "recording_enabled": r.get("ENABLED", True),
+        "recording_dir": r.get("DIR", ""),
+        "recording_book_hz": r.get("BOOK_HZ", 1.0),
+        "recording_book_levels": r.get("BOOK_LEVELS", 5),
+        "recording_raw_clob": r.get("RAW_CLOB", False),
+        "recording_twap": r.get("TWAP", True),
+        "recording_gzip": r.get("GZIP", True),
+        "recording_retention_days": r.get("RETENTION_DAYS", 14),
+        "recording_queue_size": r.get("QUEUE_SIZE", 50_000),
         "data_dir": str(ROOT / "data"),
     }
 
