@@ -683,12 +683,12 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     # show up as "fee saved".
     fee_saved = 0.0
     for r in settled:
-        taker_shares = _num(r.get("taker_shares"))
+        row_taker_shares = _num(r.get("taker_shares"))
         filled = _num(r.get("total_shares"))
-        if taker_shares <= 0 or filled <= 0:
+        if row_taker_shares <= 0 or filled <= 0:
             continue
         fee_saved += (
-            _num(r.get("taker_fee")) * (filled / taker_shares)
+            _num(r.get("taker_fee")) * (filled / row_taker_shares)
             - _num(r.get("fallback_fee"))
         )
 

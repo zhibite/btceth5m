@@ -302,6 +302,41 @@ def test_summarize_shadow_tracks_both_tracks(tmp_path):
     db.close()
 
 
+def test_summarize_avg_taker_price_is_share_weighted():
+    rows = [
+        {
+            "asset": "BTC",
+            "settled_ts": 1.0,
+            "taker_shares": 10.0,
+            "taker_price": 0.50,
+            "taker_fee": 0.10,
+            "total_shares": 10.0,
+            "maker_filled": 10.0,
+            "fallback_filled": 0.0,
+            "pnl": 5.0,
+            "taker_pnl": 5.0,
+        },
+        {
+            "asset": "BTC",
+            "settled_ts": 1.0,
+            "taker_shares": 20.0,
+            "taker_price": 0.80,
+            "taker_fee": 0.20,
+            "total_shares": 0.0,
+            "maker_filled": 0.0,
+            "fallback_filled": 0.0,
+            "pnl": 0.0,
+            "taker_pnl": -5.0,
+        },
+    ]
+
+    overall, _ = summarize_shadow(rows)
+
+    # (0.50 * 10 + 0.80 * 20) / 30 -- not 21.0 / the last row's 20 shares.
+    assert abs(overall["avg_taker_price"] - 0.70) < 1e-9
+    assert abs(overall["fee_saved_total"] - 0.10) < 1e-9
+
+
 def test_walk_asks_buys_a_share_target():
     fill = walk_asks_shares([(0.50, 3.0), (0.60, 10.0)], 8.0, 0.07)
     assert fill is not None
