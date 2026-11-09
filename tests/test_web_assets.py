@@ -158,7 +158,13 @@ def test_status_exposes_configured_assets(tmp_path):
     client, _, _ = _client(tmp_path)
     body = client.get("/api/status").json()
     assert body["configured_assets"] == ["BTC", "ETH"]
+    assert body["enabled_assets"] == ["BTC", "ETH"]
     assert body["assets"] == {}
+    assert body["risk_limits"]["global_daily_loss_usd"] == 20.0
+    assert body["risk_limits"]["asset_daily_loss_usd"] == {
+        "BTC": 20.0,
+        "ETH": 20.0,
+    }
 
 
 def test_config_api_rejects_bad_value(tmp_path):

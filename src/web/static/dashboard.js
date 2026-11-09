@@ -5,6 +5,10 @@ const PAGERS = {
   fills: { limit: 20, offset: 0, total: 0 },
   signals: { limit: 20, offset: 0, total: 0 },
 };
+// Compact one-row-per-coin layout is used from 3 configured coins upward.
+const COMPACT_THRESHOLD = 3;
+const EXPANDED = new Set(); // assets whose detail panel is open
+let LAST_STATUS = null;
 
 const fmt = (n, d = 3) => {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "--";
@@ -31,11 +35,17 @@ const esc = (v) =>
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 function assetNames(status) {
-  // Configured assets first so the grid renders even before the engine has
-  // published a tick for an asset; runtime keys cover any extra assets.
-  const names = new Set((status && status.configured_assets) || []);
-  Object.keys((status && status.assets) || {}).forEach((a) => names.add(a));
-  return Array.from(names).sort();
+  // Keep the configured order (BTC, ETH, BNB, ...) instead of sorting
+  // alphabetically; runtime keys cover any extra assets.
+  const names = [];
+  const push = (value) => {
+    const asset = String(value || "").toUpperCase();
+    if (asset && !names.includes(asset)) names.push(asset);
+  };
+  ((status && status.configured_assets) || []).forEach(push);
+  Object.keys((status && status.assets) || {}).forEach(push);
+  ((status && status.enabled_assets) || []).forEach(push);
+  return names;
 }
 
 function outcomePill(outcome) {
@@ -101,6 +111,34 @@ function statusLabel(raw) {
   if (s.startsWith("execution_error")) return "执行错误";
   if (s === "window_discovered") return "新窗口";
   return s || "等待";
+}
+
+function compactStatusLabel(raw) {
+  // Keep a compact row on one line; the full reason stays in the title.
+  const s = String(raw || "");
+  if (s.startsWith("entered")) return "已入场";
+  if (s === "in_position") return "持仓中";
+  if (s === "no_window") return "等待窗口";
+  if (s.startsWith("warming_up")) return "预热中";
+  if (s === "waiting_p0") return "等待基准";
+  if (s === "stale_feed") return "行情延迟";
+  if (s === "fair_unavailable") return "Fair 不可用";
+  if (s === "no_book") return "等待盘口";
+  if (s === "one_sided_book") return "盘口单边";
+  if (s.startsWith("wide_spread")) return "价差过大";
+  if (s.startsWith("stale_book")) return "盘口陈旧";
+  if (s.startsWith("thin_best")) return "深度不足";
+  if (s.startsWith("early")) return "未到时间";
+  if (s.startsWith("late")) return "已过时间";
+  if (s.startsWith("edge")) return "Edge 不足";
+  if (s.startsWith("filtered")) return "已过滤";
+  if (s === "killswitch") return "已停止";
+  if (s === "disabled") return "交易已关闭";
+  if (s === "daily_loss_limit" || s === "daily_loss_limit_global") return "日损限制";
+  if (s === "fill_rejected") return "成交被拒";
+  if (s.startsWith("execution_error")) return "执行错误";
+  if (s === "window_discovered") return "新窗口";
+  return statusLabel(raw);
 }
 
 function statusClass(raw) {
@@ -183,16 +221,24 @@ function renderSummary(status) {
   $("control-bar").classList.toggle("stopped", active);
   $("control-dot").className = "control-dot " + (active ? "stopped" : "running");
   $("control-label").textContent = active ? "策略已停止" : "策略运行中";
-  const assetLabel = names.join("/") || "BTC/ETH";
   const modes = status.asset_modes || {};
+  const enabledList = Array.isArray(status.enabled_assets)
+    ? status.enabled_assets
+    : names.filter((a) => ((status.assets || {})[a]?.params || {}).trading_enabled !== false);
+  const enabled = new Set(enabledList);
+  const enabledCount = names.filter((a) => enabled.has(a)).length;
+  const liveCount = names.filter((a) => modes[a] === "live").length;
+  const assetLabel = names.length > 3 ? `${names.length} 个币` : (names.join("/") || "BTC/ETH");
   const modeText = names.length
-    ? names.map((a) => `${a} ${modes[a] === "live" ? "实盘" : "纸盘"}`).join(" · ")
+    ? `${enabledCount}/${names.length} 启用 · ${liveCount} 实盘`
     : "纸盘";
   $("control-meta").textContent = active
     ? (status.killswitch?.reason || "手动停止")
     : modeText + " · 自动扫描 " + assetLabel + " 5m 窗口";
   const assetSub = $("asset-sub");
-  if (assetSub) assetSub.textContent = (names.join(" / ") || "BTC / ETH") + " 5m 窗口";
+  if (assetSub) {
+    assetSub.textContent = (names.length > 3 ? `${names.length} 个币` : (names.join(" / ") || "BTC / ETH")) + " · 5m 窗口";
+  }
   $("stop-btn").hidden = active;
   $("start-btn").hidden = !active;
 
@@ -341,13 +387,97 @@ function assetCard(asset, data, mode) {
   </div>`;
 }
 
+/* Compact one-row-per-coin layout (3+ coins). The full card stays available
+   behind the “详情” toggle so the book table is not lost. */
+function compactAssetRow(asset, data, mode) {
+  const params = (data && data.params) || {};
+  const enabled = params.trading_enabled !== false;
+  const rawStatus = enabled ? (data && data.status) : "disabled";
+  const statusHtml = `<span class="badge ${statusClass(rawStatus)}" title="${esc(statusLabel(rawStatus))}">${esc(compactStatusLabel(rawStatus))}</span>`;
+  const expanded = EXPANDED.has(asset);
+  const toggle = `<button class="btn btn-ghost btn-sm" type="button" data-action="toggle-detail">${expanded ? "收起" : "详情"}</button>`;
+  const detail = expanded
+    ? `<div class="asset-row-detail">${assetCard(asset, data, mode)}</div>`
+    : "";
+  const rowClass = "asset-row" + (enabled ? "" : " trading-off") + (expanded ? " expanded" : "");
+
+  if (!data || !data.window) {
+    return `<div class="${rowClass}" data-asset="${esc(asset)}">
+      <div class="asset-row-main">
+        <div class="asset-row-id"><span class="asset-symbol-sm">${esc(asset)}</span> ${modeBadge(mode)}</div>
+        <div>${statusHtml}</div>
+        <div class="asset-row-fair muted">等待 Gamma 发现 5 分钟窗口…</div>
+        <div class="asset-row-edge muted">Edge --</div>
+        <div class="asset-row-price muted">--</div>
+        <div class="asset-row-pos muted">无持仓</div>
+        <div class="asset-row-time muted">--</div>
+        ${toggle}
+      </div>
+      ${detail}
+    </div>`;
+  }
+
+  const w = data.window;
+  const p0 = data.price_to_beat !== undefined && data.price_to_beat !== null
+    ? data.price_to_beat
+    : w.price_to_beat;
+  const fairUp = (data.fair_up === null || data.fair_up === undefined) ? null : Number(data.fair_up);
+  const fairDown = fairUp === null ? null : 1 - fairUp;
+  const fairPct = fairUp === null ? 50 : clamp(fairUp * 100, 0, 100);
+  const cands = Array.isArray(data.candidates) ? data.candidates : [];
+  const best = data.best || cands.slice().sort((a, b) => Number(b.edge) - Number(a.edge))[0] || null;
+  const bestEdge = best ? Number(best.edge) : null;
+  const gateTag = best && best.gate
+    ? ` <span class="pill idle" title="被 min_fair / min_entry_price 过滤">${best.gate === "fair" ? "fair低" : "价低"}</span>`
+    : "";
+  const edgeHtml = best
+    ? `<span class="pill ${best.side === "UP" ? "buy" : "sell"}">${esc(best.side)}</span> <b class="${bestEdge > 0 ? "green" : "red"}">${fmt(bestEdge, 3)}</b>${gateTag}`
+    : '<span class="muted">--</span>';
+  const spot = data.spot;
+  const basis = (p0 && spot) ? (Number(spot) - Number(p0)) / Number(p0) * 1e4 : null;
+  const priceHtml = p0 === null || p0 === undefined
+    ? '<span class="muted">基准 --</span>'
+    : `<span>基准 <b class="mono">${fmt(p0, 2)}</b></span><span class="muted">现价 <b class="mono">${fmt(spot, 2)}</b>${basis === null ? "" : ` (${basis >= 0 ? "+" : ""}${fmt(basis, 1)}bp)`}</span>`;
+  const position = data.position;
+  const posHtml = position
+    ? `<span class="pill ${position.side === "UP" ? "buy" : "sell"}">${esc(position.side)}</span> <b class="mono">${fmt(position.size, 1)}</b> 份 <span class="${pnlClass(position.unrealized)}">${money(position.unrealized)}</span>`
+    : '<span class="muted">无持仓</span>';
+  const timeLeft = data.time_left !== undefined && data.time_left !== null
+    ? data.time_left
+    : Number(w.end_ts) - Date.now() / 1000;
+  const daily = data.daily_pnl;
+
+  return `<div class="${rowClass}" data-asset="${esc(asset)}">
+    <div class="asset-row-main">
+      <div class="asset-row-id"><span class="asset-symbol-sm">${esc(asset)}</span> ${modeBadge(mode)}</div>
+      <div>${statusHtml}</div>
+      <div class="asset-row-fair">
+        <div class="mini-bar"><div class="bar-up" style="width:${fairPct}%"></div><div class="bar-down" style="width:${100 - fairPct}%"></div></div>
+        <div class="mini-bar-label"><span>UP <b>${fmt(fairUp, 3)}</b></span><span>DOWN <b>${fmt(fairDown, 3)}</b></span></div>
+      </div>
+      <div class="asset-row-edge">${edgeHtml}</div>
+      <div class="asset-row-price">${priceHtml}</div>
+      <div class="asset-row-pos">${posHtml}<span class="muted">今日 <span class="${pnlClass(daily)}">${money(daily)}</span></span></div>
+      <div class="asset-row-time"><div class="asset-clock-sm">${timeStr(timeLeft)}</div><div class="muted">rel ${fmt(data.rel, 0)}s</div></div>
+      ${toggle}
+    </div>
+    ${detail}
+  </div>`;
+}
+
 function renderAssets(status) {
   const el = $("asset-grid");
+  if (!el) return;
   const assets = (status && status.assets) || {};
   const modes = (status && status.asset_modes) || {};
-  el.innerHTML = assetNames(status)
-    .map((asset) => assetCard(asset, assets[asset] || null, modes[asset] || "paper"))
-    .join("");
+  const names = assetNames(status);
+  const compact = names.length >= COMPACT_THRESHOLD;
+  el.className = "asset-grid" + (compact ? " compact" : "");
+  el.innerHTML = names
+    .map((asset) => compact
+      ? compactAssetRow(asset, assets[asset] || null, modes[asset] || "paper")
+      : assetCard(asset, assets[asset] || null, modes[asset] || "paper"))
+    .join("") || '<div class="no-data">没有配置币种</div>';
 }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
@@ -469,6 +599,7 @@ let lastTables = 0;
 async function refresh() {
   try {
     const status = await getJSON("/api/status");
+    LAST_STATUS = status;
     renderSummary(status);
     renderAssets(status);
     renderPositions(status.positions || [], status.assets || {});
@@ -516,6 +647,18 @@ async function startStrategy() {
 document.addEventListener("DOMContentLoaded", () => {
   $("stop-btn").addEventListener("click", stopStrategy);
   $("start-btn").addEventListener("click", startStrategy);
+  // Expand/collapse without waiting for the next poll. The listener sits on
+  // the container so it survives every innerHTML refresh.
+  $("asset-grid").addEventListener("click", (event) => {
+    const btn = event.target.closest('[data-action="toggle-detail"]');
+    if (!btn) return;
+    const row = btn.closest("[data-asset]");
+    if (!row) return;
+    const asset = row.dataset.asset;
+    if (EXPANDED.has(asset)) EXPANDED.delete(asset);
+    else EXPANDED.add(asset);
+    if (LAST_STATUS) renderAssets(LAST_STATUS);
+  });
   $("fills-prev").addEventListener("click", () => {
     PAGERS.fills.offset = Math.max(0, PAGERS.fills.offset - PAGERS.fills.limit);
     loadFills().catch(() => {});

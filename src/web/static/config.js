@@ -42,6 +42,8 @@ const GROUPS = [
   },
 ];
 
+const COIN_FIELDS = GROUPS.flatMap((group) => group.fields);
+
 let DATA = null;
 const INITIAL = new Map(); // asset -> params snapshot (including trading_mode)
 let COMMON_FIELDS = new Set();
@@ -113,6 +115,24 @@ function fieldHtml(field, value) {
   </div>`;
 }
 
+function compactFieldHtml(field, value) {
+  const unit = field.unit ? `<span class="config-unit">${esc(field.unit)}</span>` : "";
+  const title = esc(field.help || field.key);
+  if (field.type === "bool") {
+    return `<label class="coin-field" title="${title}" data-field="${esc(field.key)}">
+      <span class="coin-field-label">${esc(field.label)}</span>
+      <span class="coin-field-input"><input type="checkbox" data-key="${esc(field.key)}"${value ? " checked" : ""}></span>
+    </label>`;
+  }
+  return `<label class="coin-field" title="${title}" data-field="${esc(field.key)}">
+    <span class="coin-field-label">${esc(field.label)}</span>
+    <span class="coin-field-input">
+      <input type="number" step="${esc(field.step || "any")}" data-key="${esc(field.key)}" value="${esc(value)}">
+      ${unit}
+    </span>
+  </label>`;
+}
+
 function sourceLabel(source) {
   return SOURCE_LABELS[source] || esc(source || "");
 }
@@ -123,17 +143,15 @@ function modeLockMessage() {
 
 function modeNoteHtml(mode, enabled) {
   if (!enabled) {
-    return '<span class="orange">该币种交易已关闭：不会开新仓，已有持仓仍会正常结算。</span>';
-  }
-  if (DATA.live_available) {
-    return mode === "live"
-      ? '<span class="red">实盘：新入场会使用真实资金，请确认单笔金额与日损失上限。</span>'
-      : '<span class="muted">纸盘：使用真实盘口模拟成交，不产生真实订单。</span>';
+    return '<span class="orange">交易已关闭：不开新仓，已有持仓仍会正常结算；无持仓时不订阅 CLOB 盘口。</span>';
   }
   if (mode === "live") {
+    if (DATA.live_available) {
+      return '<span class="red">实盘：新入场会使用真实资金，请确认单笔金额与日损失上限。</span>';
+    }
     return `<span class="red">已选择实盘配置，但当前无法执行：${esc(modeLockMessage())}；实际按纸盘运行。</span>`;
   }
-  return `<span class="muted">实盘不可用：${esc(modeLockMessage())}。当前按纸盘运行。</span>`;
+  return "";
 }
 
 function modeSwitchHtml(asset, mode) {
@@ -168,31 +186,34 @@ function groupsHtml(scope, params) {
   }).join("");
 }
 
-function cardHtml(card) {
+/* One list row per coin: enable/mode controls + a compact parameter grid. */
+function coinRowHtml(card) {
   const asset = card.asset;
   const params = card.params || {};
   const mode = params.trading_mode === "live" ? "live" : "paper";
   const enabled = params.trading_enabled !== false;
   const effective = card.effective_mode === "live" ? "live" : "paper";
-  return `<section class="asset-config-card" data-asset="${esc(asset)}" data-source="${esc(card.source)}" data-overridden="${card.overridden ? 1 : 0}">
-    <div class="asset-config-head">
-      <div class="asset-config-title">
+  const fields = COIN_FIELDS
+    .filter((f) => !isCommonField(f.key))
+    .map((f) => compactFieldHtml(f, params[f.key]))
+    .join("");
+  return `<section class="coin-row${enabled ? "" : " trading-off"}" data-asset="${esc(asset)}" data-source="${esc(card.source)}" data-overridden="${card.overridden ? 1 : 0}">
+    <div class="coin-row-head">
+      <div class="coin-row-title">
         <span class="asset-symbol">${esc(asset)}</span>
         <span class="badge ${effective}" data-role="effective">${effective === "live" ? "实盘" : "纸盘"}</span>
         <span class="config-source" data-role="source">${sourceLabel(card.source)}</span>
       </div>
-      <div class="asset-config-controls">
+      <div class="coin-row-controls">
         ${enabledToggleHtml(enabled)}
         ${modeSwitchHtml(asset, mode)}
+        <span class="save-msg muted" data-role="msg">没有待保存的修改</span>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="reset"${card.overridden ? "" : " disabled"}>恢复默认</button>
+        <button class="btn btn-primary btn-sm" type="button" data-action="save" disabled>保存</button>
       </div>
     </div>
     <div class="mode-note" data-role="mode-note">${modeNoteHtml(mode, enabled)}</div>
-    ${groupsHtml("asset", params)}
-    <div class="asset-config-actions">
-      <span class="save-msg muted" data-role="msg">没有待保存的修改</span>
-      <button class="btn btn-ghost" type="button" data-action="reset"${card.overridden ? "" : " disabled"}>恢复默认</button>
-      <button class="btn btn-primary" type="button" data-action="save" disabled>保存 ${esc(asset)}</button>
-    </div>
+    <div class="coin-fields">${fields}</div>
   </section>`;
 }
 
@@ -202,7 +223,7 @@ function commonCardHtml() {
     <div class="asset-config-head">
       <div class="asset-config-title">
         <span class="asset-symbol">通用设置</span>
-        <span class="badge paper">BTC / ETH 共享</span>
+        <span class="badge paper">所有币种共享</span>
       </div>
     </div>
     <div class="mode-note"><span class="muted">费率、σ、引擎节奏、信号记录与盘口新鲜度等所有币种共用的参数；修改后保存即对所有币种生效。</span></div>
@@ -254,35 +275,36 @@ function render() {
   renderCommon();
   const cards = DATA.cards || [];
   const wrap = $("asset-cards");
+  INITIAL.clear();
   if (!cards.length) {
     wrap.innerHTML = '<div class="no-data">没有配置币种</div>';
     return;
   }
-  wrap.innerHTML = cards.map(cardHtml).join("");
+  wrap.innerHTML = cards.map(coinRowHtml).join("");
   cards.forEach((card) => {
     INITIAL.set(card.asset, Object.assign({}, card.params));
-    bindCard(wrap.querySelector(`.asset-config-card[data-asset="${card.asset}"]`));
+    bindRow(wrap.querySelector(`.coin-row[data-asset="${card.asset}"]`));
   });
 }
 
-/* ── Card state ───────────────────────────────────────────────────────── */
-function cardParams(cardEl) {
+/* ── Coin row state ───────────────────────────────────────────────────── */
+function rowParams(rowEl) {
   const params = {};
-  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+  rowEl.querySelectorAll("[data-key]").forEach((el) => {
     params[el.dataset.key] = el.type === "checkbox" ? el.checked : Number(el.value);
   });
-  params.trading_mode = selectedMode(cardEl);
-  params.trading_enabled = enabledChecked(cardEl);
+  params.trading_mode = selectedMode(rowEl);
+  params.trading_enabled = enabledChecked(rowEl);
   return params;
 }
 
-function selectedMode(cardEl) {
-  const checked = cardEl.querySelector('input[type="radio"]:checked');
+function selectedMode(rowEl) {
+  const checked = rowEl.querySelector('input[type="radio"]:checked');
   return checked ? checked.value : "paper";
 }
 
-function enabledChecked(cardEl) {
-  const el = cardEl.querySelector('[data-role="enabled"]');
+function enabledChecked(rowEl) {
+  const el = rowEl.querySelector('[data-role="enabled"]');
   return el ? el.checked : true;
 }
 
@@ -291,84 +313,85 @@ function fieldChanged(el, initial) {
   return Number(el.value) !== Number(initial);
 }
 
-function updateCardState(cardEl) {
-  const asset = cardEl.dataset.asset;
+function updateRowState(rowEl) {
+  const asset = rowEl.dataset.asset;
   const initial = INITIAL.get(asset) || {};
   let changed = 0;
-  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+  rowEl.querySelectorAll("[data-key]").forEach((el) => {
     const diff = fieldChanged(el, initial[el.dataset.key]);
-    const box = el.closest(".field");
+    const box = el.closest(".coin-field");
     if (box) box.classList.toggle("changed", diff);
     if (diff) changed += 1;
   });
-  const mode = selectedMode(cardEl);
+  const mode = selectedMode(rowEl);
   const modeChanged = mode !== (initial.trading_mode || "paper");
-  const switchBox = cardEl.querySelector(".mode-switch");
+  const switchBox = rowEl.querySelector(".mode-switch");
   if (switchBox) switchBox.classList.toggle("changed", modeChanged);
-  const enabled = enabledChecked(cardEl);
+  const enabled = enabledChecked(rowEl);
   const enabledChanged = enabled !== (initial.trading_enabled !== false);
-  const toggle = cardEl.querySelector(".trade-toggle");
+  const toggle = rowEl.querySelector(".trade-toggle");
   if (toggle) {
     toggle.classList.toggle("changed", enabledChanged);
     const label = toggle.querySelector(".trade-toggle-label");
     if (label) label.textContent = enabled ? "交易开启" : "交易关闭";
   }
-  const note = cardEl.querySelector('[data-role="mode-note"]');
+  rowEl.classList.toggle("trading-off", !enabled);
+  const note = rowEl.querySelector('[data-role="mode-note"]');
   if (note) note.innerHTML = modeNoteHtml(mode, enabled);
   const total = changed + (modeChanged ? 1 : 0) + (enabledChanged ? 1 : 0);
-  cardEl.querySelector('[data-action="save"]').disabled = total === 0;
-  cardEl.querySelector('[data-role="msg"]').textContent = total
+  rowEl.querySelector('[data-action="save"]').disabled = total === 0;
+  rowEl.querySelector('[data-role="msg"]').textContent = total
     ? total + " 项待保存"
     : "没有待保存的修改";
 }
 
-function applyParams(cardEl, params) {
-  cardEl.querySelectorAll("[data-key]").forEach((el) => {
+function applyParams(rowEl, params) {
+  rowEl.querySelectorAll("[data-key]").forEach((el) => {
     const value = params[el.dataset.key];
     if (el.type === "checkbox") el.checked = Boolean(value);
     else el.value = value;
   });
   const mode = params.trading_mode === "live" ? "live" : "paper";
-  cardEl.querySelectorAll('input[type="radio"]').forEach((el) => {
+  rowEl.querySelectorAll('input[type="radio"]').forEach((el) => {
     el.checked = el.value === mode;
   });
-  const enabledEl = cardEl.querySelector('[data-role="enabled"]');
+  const enabledEl = rowEl.querySelector('[data-role="enabled"]');
   if (enabledEl) enabledEl.checked = params.trading_enabled !== false;
-  cardEl.querySelectorAll(".field").forEach((el) => el.classList.remove("changed"));
-  const switchBox = cardEl.querySelector(".mode-switch");
+  rowEl.querySelectorAll(".coin-field").forEach((el) => el.classList.remove("changed"));
+  const switchBox = rowEl.querySelector(".mode-switch");
   if (switchBox) switchBox.classList.remove("changed");
-  const toggle = cardEl.querySelector(".trade-toggle");
+  const toggle = rowEl.querySelector(".trade-toggle");
   if (toggle) toggle.classList.remove("changed");
-  INITIAL.set(cardEl.dataset.asset, Object.assign({}, params));
-  updateCardState(cardEl);
+  INITIAL.set(rowEl.dataset.asset, Object.assign({}, params));
+  updateRowState(rowEl);
 }
 
-function applyMeta(cardEl, payload) {
+function applyMeta(rowEl, payload) {
   if (payload.source !== undefined) {
-    cardEl.dataset.source = payload.source;
-    cardEl.dataset.overridden = payload.overridden ? "1" : "0";
-    cardEl.querySelector('[data-role="source"]').textContent = sourceLabel(payload.source);
-    cardEl.querySelector('[data-action="reset"]').disabled = !payload.overridden;
+    rowEl.dataset.source = payload.source;
+    rowEl.dataset.overridden = payload.overridden ? "1" : "0";
+    rowEl.querySelector('[data-role="source"]').textContent = sourceLabel(payload.source);
+    rowEl.querySelector('[data-action="reset"]').disabled = !payload.overridden;
   }
   if (payload.effective_mode !== undefined) {
     const effective = payload.effective_mode === "live" ? "live" : "paper";
-    const badge = cardEl.querySelector('[data-role="effective"]');
+    const badge = rowEl.querySelector('[data-role="effective"]');
     badge.className = "badge " + effective;
     badge.textContent = effective === "live" ? "实盘" : "纸盘";
-    const dataCard = (DATA.cards || []).find((c) => c.asset === cardEl.dataset.asset);
+    const dataCard = (DATA.cards || []).find((c) => c.asset === rowEl.dataset.asset);
     if (dataCard) dataCard.effective_mode = effective;
   }
 }
 
-function bindCard(cardEl) {
-  if (!cardEl) return;
-  cardEl.querySelectorAll("[data-key], input[type=radio], [data-role=enabled]").forEach((el) => {
-    el.addEventListener("input", () => updateCardState(cardEl));
-    el.addEventListener("change", () => updateCardState(cardEl));
+function bindRow(rowEl) {
+  if (!rowEl) return;
+  rowEl.querySelectorAll("[data-key], input[type=radio], [data-role=enabled]").forEach((el) => {
+    el.addEventListener("input", () => updateRowState(rowEl));
+    el.addEventListener("change", () => updateRowState(rowEl));
   });
-  cardEl.querySelector('[data-action="save"]').addEventListener("click", () => saveCard(cardEl));
-  cardEl.querySelector('[data-action="reset"]').addEventListener("click", () => resetCard(cardEl));
-  updateCardState(cardEl);
+  rowEl.querySelector('[data-action="save"]').addEventListener("click", () => saveRow(rowEl));
+  rowEl.querySelector('[data-action="reset"]').addEventListener("click", () => resetRow(rowEl));
+  updateRowState(rowEl);
 }
 
 /* ── Common settings card ─────────────────────────────────────────────── */
@@ -462,9 +485,19 @@ async function resetCommon(cardEl) {
   }
 }
 
-async function saveCard(cardEl) {
-  const asset = cardEl.dataset.asset;
-  const params = cardParams(cardEl);
+/* ── Per-coin save/reset ──────────────────────────────────────────────── */
+function updateDataCard(asset, payload) {
+  const card = (DATA.cards || []).find((c) => c.asset === asset);
+  if (!card) return;
+  if (payload.params) card.params = Object.assign({}, payload.params);
+  if (payload.source !== undefined) card.source = payload.source;
+  if (payload.overridden !== undefined) card.overridden = Boolean(payload.overridden);
+  if (payload.effective_mode !== undefined) card.effective_mode = payload.effective_mode;
+}
+
+async function saveRow(rowEl) {
+  const asset = rowEl.dataset.asset;
+  const params = rowParams(rowEl);
   const initial = INITIAL.get(asset) || {};
   if (params.trading_mode === "live" && initial.trading_mode !== "live") {
     const text = DATA.live_available
@@ -472,16 +505,17 @@ async function saveCard(cardEl) {
       : `${asset} 将保存为实盘配置；当前实盘通道不可用（${modeLockMessage()}），实际仍按纸盘运行。确认保存？`;
     if (!confirm(text)) return;
   }
-  const btn = cardEl.querySelector('[data-action="save"]');
-  const msg = cardEl.querySelector('[data-role="msg"]');
+  const btn = rowEl.querySelector('[data-action="save"]');
+  const msg = rowEl.querySelector('[data-role="msg"]');
   btn.disabled = true;
   msg.textContent = "保存中...";
   try {
     const res = await sendJSON("/api/config", "PUT", { asset, params });
-    applyParams(cardEl, res.params);
-    applyMeta(cardEl, res);
+    applyParams(rowEl, res.params);
+    applyMeta(rowEl, res);
+    updateDataCard(asset, res);
     msg.textContent = "已保存（" + asset + "）";
-    setTimeout(() => updateCardState(cardEl), 3000);
+    setTimeout(() => updateRowState(rowEl), 3000);
   } catch (e) {
     if (String(e.message) === "auth") return;
     msg.textContent = "保存失败：" + e.message;
@@ -489,17 +523,18 @@ async function saveCard(cardEl) {
   }
 }
 
-async function resetCard(cardEl) {
-  const asset = cardEl.dataset.asset;
+async function resetRow(rowEl) {
+  const asset = rowEl.dataset.asset;
   if (!confirm(`恢复 ${asset} 的默认参数？当前独立设置会被删除。`)) return;
-  const msg = cardEl.querySelector('[data-role="msg"]');
+  const msg = rowEl.querySelector('[data-role="msg"]');
   msg.textContent = "恢复中...";
   try {
     const res = await sendJSON("/api/config/reset", "POST", { asset });
-    applyParams(cardEl, res.params);
-    applyMeta(cardEl, res);
+    applyParams(rowEl, res.params);
+    applyMeta(rowEl, res);
+    updateDataCard(asset, res);
     msg.textContent = `已恢复 ${asset} 的默认`;
-    setTimeout(() => updateCardState(cardEl), 3000);
+    setTimeout(() => updateRowState(rowEl), 3000);
   } catch (e) {
     if (String(e.message) === "auth") return;
     msg.textContent = "恢复失败：" + e.message;
@@ -507,8 +542,9 @@ async function resetCard(cardEl) {
 }
 
 function hasUnsaved() {
-  return Array.from(document.querySelectorAll(".asset-config-card")).some((cardEl) => {
-    return !cardEl.querySelector('[data-action="save"]').disabled;
+  return Array.from(document.querySelectorAll(".coin-row, .common-config-card")).some((el) => {
+    const btn = el.querySelector('[data-action="save"]');
+    return btn !== null && !btn.disabled;
   });
 }
 

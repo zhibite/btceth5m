@@ -313,6 +313,38 @@ dialog.modal[open] { animation: modal-in .18s ease-out; }
 .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 18px; margin-bottom: 24px; }
 .asset-grid .price-card { margin-bottom: 0; }
 .price-card.trading-disabled { opacity: .72; }
+
+/* Compact dashboard: one low row per coin when 3+ coins are configured. */
+.asset-grid.compact { display: flex; flex-direction: column; gap: 8px; }
+.asset-row { background: #12122a; border: 1px solid #1e1e3a; border-radius: 10px; overflow: hidden; }
+.asset-row.trading-off { opacity: .68; }
+.asset-row.expanded { border-color: #2a2a4a; }
+.asset-row-main {
+  display: grid;
+  grid-template-columns: 150px 128px minmax(180px, 1.2fr) minmax(110px, .8fr)
+    minmax(180px, 1.2fr) minmax(130px, 1fr) 68px 62px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.asset-row.trading-off .asset-row-main { opacity: .85; }
+.asset-row-id { display: flex; align-items: center; gap: 6px; font-weight: 700; min-width: 0; }
+.asset-symbol-sm { font-size: 14px; font-weight: 800; letter-spacing: -.01em; }
+.asset-row-fair { min-width: 0; }
+.mini-bar { height: 6px; border-radius: 3px; overflow: hidden; display: flex; background: #1e1e3a; }
+.mini-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: #6b7280; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.mini-bar-label b { color: #c9c9d6; }
+.asset-row-main .badge { white-space: nowrap; }
+.asset-row-edge { font-size: 12px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.asset-row-price { font-size: 11px; color: #9ca3af; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.asset-row-price b { color: #e0e0e0; font-weight: 600; }
+.asset-row-pos { font-size: 11px; color: #9ca3af; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.asset-row-time { text-align: right; }
+.asset-clock-sm { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.asset-row-time .muted { font-size: 10px; }
+.asset-row-detail { border-top: 1px solid #1e1e3a; }
+.asset-row-detail .price-card { margin: 0; border: none; border-radius: 0; padding: 12px 14px 16px; background: transparent; }
+.asset-row-detail .price-card > .price-head { display: none; }
 .asset-clock { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .asset-clock small { display: block; font-size: 10px; color: #6b7280; font-weight: 500; }
 .status-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 12px; font-size: 12px; color: #6b7280; }
@@ -330,9 +362,25 @@ dialog.modal[open] { animation: modal-in .18s ease-out; }
 .config-unit { font-size: 11px; color: #6b7280; margin-left: 4px; }
 .login-note { font-size: 12px; color: #6b7280; text-align: center; margin-top: 14px; line-height: 1.5; }
 .login-note a { color: #a78bfa; }
+@media (max-width: 1100px) {
+  .asset-row-main {
+    grid-template-columns: 120px 112px minmax(150px, 1fr) minmax(100px, .8fr)
+      minmax(150px, 1fr) 118px 58px 58px;
+    gap: 8px;
+    padding: 9px 10px;
+  }
+}
+
 @media (max-width: 900px) {
   .asset-grid { grid-template-columns: 1fr; }
   .asset-clock { font-size: 18px; }
+  .asset-row-main { display: flex; flex-wrap: wrap; gap: 5px 14px; padding: 9px 12px; }
+  .asset-row-id { flex: 1 1 140px; }
+  .asset-row-edge { flex: 0 0 auto; }
+  .asset-row-time { margin-left: auto; }
+  .asset-row-fair { flex: 1 1 100%; order: 8; }
+  .asset-row-price { flex: 1 1 100%; order: 9; }
+  .asset-row-pos { flex: 1 1 100%; order: 10; }
 }
 
 /* Config field input + unit on one line without overflowing the card. */
@@ -500,10 +548,82 @@ dialog.modal[open] { animation: modal-in .18s ease-out; }
 }
 .asset-config-actions .save-msg { margin-right: auto; font-size: 12px; }
 
+/* ── Config page: one list row per coin ──────────────────────────────── */
+.coin-list { display: flex; flex-direction: column; gap: 10px; }
+.coin-row {
+  background: #12122a;
+  border: 1px solid #1e1e3a;
+  border-radius: 12px;
+  padding: 13px 16px 14px;
+}
+.coin-row.trading-off { opacity: .82; }
+.coin-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.coin-row-title { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.coin-row-title .asset-symbol { font-size: 19px; }
+.coin-row-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.coin-row-controls .save-msg { font-size: 12px; margin-right: 4px; }
+.coin-row .mode-note { margin-top: 7px; }
+.coin-row .mode-note:empty { display: none; }
+.coin-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+  gap: 8px 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #1e1e3a;
+}
+.coin-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #0a0a14;
+  border: 1px solid #1e1e3a;
+  border-radius: 7px;
+  padding: 6px 9px;
+  min-width: 0;
+  transition: border-color .15s ease, box-shadow .15s ease;
+  cursor: text;
+}
+.coin-field:hover { border-color: #2a2a4a; }
+.coin-field.changed { border-color: #7c3aed; box-shadow: 0 0 0 1px rgba(124, 58, 237, .35); }
+.coin-field-label { font-size: 11px; color: #9ca3af; white-space: nowrap; }
+.coin-field-input { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.coin-field-input input[type=number] {
+  width: 76px;
+  min-width: 0;
+  background: #12122a;
+  border: 1px solid #2a2a4a;
+  color: #e0e0e0;
+  border-radius: 5px;
+  padding: 5px 7px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.coin-field-input input[type=number]:focus { outline: none; border-color: #7c3aed; box-shadow: 0 0 0 2px rgba(124, 58, 237, .16); }
+.coin-field .config-unit { font-size: 10px; }
+#common-card { margin-top: 16px; }
+
 @media (max-width: 760px) {
   .asset-config-grid { grid-template-columns: 1fr; }
   .asset-config-card { padding: 16px; }
   .asset-config-head { align-items: flex-start; }
   .asset-config-card .config-grid { grid-template-columns: 1fr; }
   .asset-config-actions .save-msg { width: 100%; }
+  .coin-row { padding: 12px; }
+  .coin-row-controls { width: 100%; justify-content: flex-end; }
+  .coin-row-controls .save-msg { width: 100%; order: -1; }
+  .coin-fields { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 520px) {
+  .coin-fields { grid-template-columns: 1fr; }
+  .coin-field-input input[type=number] { width: 92px; }
 }

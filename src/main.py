@@ -150,6 +150,7 @@ async def main() -> None:
             books.on_trade = recorder.record_trade
             if settings.recording_raw_clob:
                 books.on_message = recorder.record_raw_clob
+    enabled_assets = runtime.enabled_assets(settings.assets_list)
     rtds = RtdsFeed(
         settings.assets_list,
         settings.rtds_url,
@@ -159,6 +160,10 @@ async def main() -> None:
         latency=latency,
         on_message=recorder.record_rtds if recorder is not None else None,
         twap_topic=bool(recorder is not None and settings.recording_twap),
+        data_timeout_s=settings.rtds_data_timeout_s,
+        # Disabled coins still get RTDS prices for display/recording, but a
+        # quiet disabled symbol must not force the shared socket to reconnect.
+        watch_assets=enabled_assets,
     )
     paper = PaperBroker(db, runtime)
     live = LiveBroker(settings) if settings.live_enabled else None
@@ -205,9 +210,24 @@ async def main() -> None:
         started_at=time.time(),
     )
 
+    global_loss_limit = runtime.params.daily_loss_limit_usd
+    higher_asset_limits = {}
+    for asset in settings.assets_list:
+        asset_limit = runtime.params_for(asset).daily_loss_limit_usd
+        if asset_limit > global_loss_limit:
+            higher_asset_limits[asset] = asset_limit
+    if higher_asset_limits:
+        log.warning(
+            "risk.daily_loss_limit_mismatch",
+            global_daily_loss_usd=global_loss_limit,
+            asset_daily_loss_usd=higher_asset_limits,
+            note="the portfolio guard uses the global value, not the per-asset one",
+        )
+
     log.info(
         "boot",
         assets=settings.assets_list,
+        enabled_assets=enabled_assets,
         mode=router.mode,
         asset_modes={
             asset: router.mode_for(asset) for asset in settings.assets_list
@@ -217,6 +237,11 @@ async def main() -> None:
         live_enabled=settings.live_enabled,
         db=str(settings.db_path),
         recording=str(settings.recording_path) if recorder is not None else None,
+        daily_loss_limit_global=runtime.params.daily_loss_limit_usd,
+        daily_loss_limit_by_asset={
+            asset: runtime.params_for(asset).daily_loss_limit_usd
+            for asset in settings.assets_list
+        },
         web=f"{settings.web_host}:{settings.web_port}",
         params=runtime.params.model_dump(),
     )

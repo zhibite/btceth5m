@@ -1,9 +1,12 @@
 ###############################################################################
-# Polymarket 5m BTC/ETH TWAP paper bot
+# Polymarket 5m multi-coin TWAP paper bot
+# BTC / ETH / BNB / SOL / XRP / DOGE / HYPE
 ###############################################################################
 
 [GENERAL]
-ASSETS = "BTC,ETH"
+# Order matters on the dashboard and config list. Every coin gets its own
+# trading_enabled / trading_mode, edited on /config and stored in SQLite.
+ASSETS = "BTC,ETH,BNB,SOL,XRP,DOGE,HYPE"
 WINDOW_SEC = 300
 TWAP_WINDOW_S = 60
 
@@ -15,6 +18,10 @@ CLOB_API = "https://clob.polymarket.com"
 PRICE_BUFFER_S = 900
 RECONNECT_BASE_S = 1.0
 RECONNECT_MAX_S = 30.0
+# Enabled assets' raw Chainlink stream must produce data at least this often.
+# RTDS can keep a half-open socket alive for 20-100 minutes; the feed forces
+# a reconnect when this watchdog expires.
+RTDS_DATA_TIMEOUT_S = 30.0
 
 [RECORDING]
 # 实时录制策略看到的市场数据，用于回测/回放。录制器复用已经建立的
@@ -24,8 +31,9 @@ RECONNECT_MAX_S = 30.0
 ENABLED = true
 # 留空 -> <DATA_DIR>/live；相对路径从仓库根目录解析。
 DIR = ""
-# 盘口快照频率与档位数。1 Hz / 5 档足够做成交模拟。
-BOOK_HZ = 1.0
+# 盘口快照频率与档位数。2 Hz 与引擎 0.5s tick 对齐，回放首触发更接近实盘；
+# 5 档对 $5 订单足够。数据量约为 1 Hz 的两倍，仍只有 ~40 MB/天。
+BOOK_HZ = 2.0
 BOOK_LEVELS = 5
 # 原始 CLOB 消息每天可达数 GB；默认只存 1 Hz 快照。
 RAW_CLOB = false
@@ -66,6 +74,9 @@ MODEL_BUFFER = 0.02
 MIN_FAIR = 0.0
 MIN_ENTRY_PRICE = 0.0
 MAX_POSITION_USD = 5.0
+# Also the portfolio-level cap: RiskManager blocks all entries when the
+# combined daily PnL <= -DAILY_LOSS_LIMIT_USD. A larger per-asset override
+# does NOT raise this global cap; set this value explicitly if you want 100.
 DAILY_LOSS_LIMIT_USD = 20.0
 ENTRY_MIN_REL_S = 60
 ENTRY_MAX_REL_S = 285
@@ -104,3 +115,22 @@ MODEL_BUFFER = 0.05
 # won 10%. Both are independently tunable from the config page.
 MIN_FAIR = 0.65
 MIN_ENTRY_PRICE = 0.55
+
+# New coins are wired but start disabled: enable each one on /config after
+# checking that its book is deep enough and that RTDS is delivering prints.
+# A disabled coin keeps RTDS + Gamma discovery, but the CLOB order-book
+# subscription is dropped, which is the expensive part of the WS load.
+[STRATEGY.BNB]
+TRADING_ENABLED = false
+
+[STRATEGY.SOL]
+TRADING_ENABLED = false
+
+[STRATEGY.XRP]
+TRADING_ENABLED = false
+
+[STRATEGY.DOGE]
+TRADING_ENABLED = false
+
+[STRATEGY.HYPE]
+TRADING_ENABLED = false

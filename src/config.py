@@ -66,7 +66,7 @@ class AppSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=(str(ROOT / ".env"),), extra="ignore")
 
-    assets: str = "BTC,ETH"
+    assets: str = "BTC,ETH,BNB,SOL,XRP,DOGE,HYPE"
     window_sec: int = 300
     twap_window_s: int = 60
 
@@ -77,6 +77,9 @@ class AppSettings(BaseSettings):
     price_buffer_s: int = 900
     reconnect_base_s: float = 1.0
     reconnect_max_s: float = 30.0
+    # Force a reconnect when an enabled asset's raw RTDS stream goes silent.
+    # The server can keep a half-open socket alive for 20-100 minutes.
+    rtds_data_timeout_s: float = 30.0
 
     web_host: str = "127.0.0.1"
     web_port: int = 8036
@@ -91,7 +94,7 @@ class AppSettings(BaseSettings):
     # Market-data recording for backtest/replay (see src/recording/recorder.py).
     recording_enabled: bool = True
     recording_dir: str = ""  # empty -> <data_dir>/live
-    recording_book_hz: float = 1.0
+    recording_book_hz: float = 2.0
     recording_book_levels: int = 5
     recording_raw_clob: bool = False
     recording_twap: bool = True
@@ -219,7 +222,7 @@ def _toml_settings() -> dict[str, Any]:
     )
     r = _section("RECORDING")
     return {
-        "assets": g.get("ASSETS", "BTC,ETH"),
+        "assets": g.get("ASSETS", "BTC,ETH,BNB,SOL,XRP,DOGE,HYPE"),
         "window_sec": g.get("WINDOW_SEC", 300),
         "twap_window_s": g.get("TWAP_WINDOW_S", 60),
         "rtds_url": f.get("RTDS_URL", "wss://ws-live-data.polymarket.com"),
@@ -232,6 +235,7 @@ def _toml_settings() -> dict[str, Any]:
         "price_buffer_s": f.get("PRICE_BUFFER_S", 900),
         "reconnect_base_s": f.get("RECONNECT_BASE_S", 1.0),
         "reconnect_max_s": f.get("RECONNECT_MAX_S", 30.0),
+        "rtds_data_timeout_s": f.get("RTDS_DATA_TIMEOUT_S", 30.0),
         "web_host": w.get("HOST", "127.0.0.1"),
         "web_port": w.get("PORT", 8036),
         "web_username": w.get("USERNAME", "admin"),
@@ -241,7 +245,7 @@ def _toml_settings() -> dict[str, Any]:
         "live_enabled": e.get("LIVE_ENABLED", False),
         "recording_enabled": r.get("ENABLED", True),
         "recording_dir": r.get("DIR", ""),
-        "recording_book_hz": r.get("BOOK_HZ", 1.0),
+        "recording_book_hz": r.get("BOOK_HZ", 2.0),
         "recording_book_levels": r.get("BOOK_LEVELS", 5),
         "recording_raw_clob": r.get("RAW_CLOB", False),
         "recording_twap": r.get("TWAP", True),
@@ -401,6 +405,18 @@ class RuntimeConfig:
         params = self._apply_common(StrategyParams.model_validate(merged))
         self._effective[key] = (self.params, params)
         return params
+
+    def enabled_assets(self, assets) -> list[str]:
+        """Configured assets whose per-coin ``trading_enabled`` is on.
+
+        Used to trim WebSocket subscriptions: disabled coins still get Gamma
+        window discovery and RTDS prices, but not the much heavier CLOB book.
+        """
+        return [
+            str(asset).upper()
+            for asset in assets
+            if self.params_for(str(asset)).trading_enabled
+        ]
 
     def has_override(self, asset: str | None) -> bool:
         return bool(asset) and str(asset).upper() in self.asset_params

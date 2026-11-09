@@ -1,8 +1,13 @@
 """Polymarket CLOB market WebSocket: order books and last trades.
 
-The feed subscribes to the union of the current 5m window tokens for every
-asset. A token-set change (new window) bumps a version and forces a clean
-reconnect so no stale subscription lingers.
+The feed subscribes to the union of the current 5m window tokens for the
+*active* assets. Active means the coin is enabled for trading or still has an
+open position; disabled coins are dropped from the book subscription so seven
+coins do not multiply the CLOB message load by seven.
+
+A token-set change (new window, coin enabled/disabled) bumps a version. The
+feed debounces those changes before reconnecting, so a 5m rollover that
+updates all coins at once costs one reconnect instead of one per coin.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ class ClobWsFeed:
         url: str,
         reconnect_base_s: float = 1.0,
         reconnect_max_s: float = 30.0,
+        subscribe_debounce_s: float = 0.75,
         on_trade=None,
         on_message=None,
     ) -> None:
@@ -39,6 +45,7 @@ class ClobWsFeed:
         self.on_message = on_message
         self.reconnect_base_s = float(reconnect_base_s)
         self.reconnect_max_s = float(reconnect_max_s)
+        self.subscribe_debounce_s = max(0.0, float(subscribe_debounce_s))
         self.books: dict[str, OrderBook] = {}
         self.last_trade: dict[str, tuple[float, float, float]] = {}
         # Every last_trade_price event since the last drain. The maker shadow
@@ -46,12 +53,51 @@ class ClobWsFeed:
         # `last_trade` alone is not enough.
         self.trade_events: deque[dict[str, Any]] = deque(maxlen=50000)
         self._tokens: dict[str, list[str]] = {a: [] for a in self.assets}
+        # Until the engine syncs the runtime config, subscribe to every
+        # configured asset (the old behavior).
+        self._active: set[str] = set(self.assets)
         self._version = 0
         self._running = False
         self._task: asyncio.Task | None = None
         self.connected = False
         self.last_error = ""
         self.last_msg_ts = 0.0
+        self.messages = 0
+
+    @property
+    def active_assets(self) -> set[str]:
+        return set(self._active)
+
+    def set_active_assets(self, assets) -> None:
+        """Restrict CLOB subscriptions to the coins that need book data.
+
+        Called by the engine with enabled coins plus any coin that still has
+        an open position. Changes are debounced with the token updates.
+        """
+        active = {str(a).upper() for a in assets}
+        if active == self._active:
+            return
+        self._active = active
+        self._sync_book_index()
+        self._version += 1
+        log.info("clob.active_assets", assets=sorted(active))
+
+    def _sync_book_index(self) -> None:
+        """Keep OrderBook objects only for tokens of active assets.
+
+        Without this, every finished 5m window leaves two books behind and
+        seven coins accumulate thousands of stale book objects per day.
+        """
+        live = {
+            token
+            for asset in self._active
+            for token in self._tokens.get(asset, [])
+        }
+        for token in live:
+            self.books.setdefault(token, OrderBook(token))
+        for token in [t for t in self.books if t not in live]:
+            self.books.pop(token, None)
+            self.last_trade.pop(token, None)
 
     def set_tokens(self, asset: str, tokens: list[str]) -> None:
         asset = asset.upper()
@@ -59,10 +105,32 @@ class ClobWsFeed:
         if self._tokens.get(asset) == clean:
             return
         self._tokens[asset] = clean
-        for token in clean:
-            self.books.setdefault(token, OrderBook(token))
+        self._sync_book_index()
         self._version += 1
         log.info("clob.tokens", asset=asset, tokens=[t[:10] for t in clean])
+
+    def _token_union(self) -> list[str]:
+        return sorted(
+            {token for asset in self._active for token in self._tokens.get(asset, [])}
+        )
+
+    async def _stable_tokens(self) -> list[str]:
+        """Wait for token-set changes to settle before reconnecting.
+
+        At a 5m boundary every coin's window changes within a short window.
+        Without the debounce the feed would reconnect once per coin; with it
+        the whole rollover becomes a single reconnect.
+        """
+        while self._running:
+            version = self._version
+            tokens = self._token_union()
+            if not tokens:
+                return []
+            if self.subscribe_debounce_s > 0:
+                await asyncio.sleep(self.subscribe_debounce_s)
+            if version == self._version:
+                return tokens
+        return []
 
     def book(self, token_id: str) -> Optional[OrderBook]:
         return self.books.get(str(token_id))
@@ -94,17 +162,19 @@ class ClobWsFeed:
             "connected": self.connected,
             "last_error": self.last_error,
             "last_msg_ts": self.last_msg_ts,
+            "messages": self.messages,
+            "active_assets": sorted(self._active),
             "tokens": {a: len(t) for a, t in self._tokens.items()},
         }
 
     async def _run(self) -> None:
         delay = self.reconnect_base_s
         while self._running:
-            version = self._version
-            tokens = sorted({t for ts in self._tokens.values() for t in ts})
+            tokens = await self._stable_tokens()
             if not tokens:
                 await asyncio.sleep(0.5)
                 continue
+            version = self._version
             try:
                 async with websockets.connect(
                     self.url,
@@ -116,10 +186,17 @@ class ClobWsFeed:
                     self.connected = True
                     self.last_error = ""
                     delay = self.reconnect_base_s
-                    log.info("clob.connected", tokens=len(tokens))
+                    log.info(
+                        "clob.connected",
+                        tokens=len(tokens),
+                        assets=sorted(self._active),
+                    )
                     while self._running and self._version == version:
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                            # Keep the timeout short so an enable/disable edit
+                            # or window rollover is picked up promptly even on
+                            # a quiet book.
+                            msg = await asyncio.wait_for(ws.recv(), timeout=2.0)
                         except asyncio.TimeoutError:
                             continue
                         self._handle(msg)
@@ -131,12 +208,15 @@ class ClobWsFeed:
                 log.warning("clob.reconnect", error=repr(exc), delay_s=delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2.0, self.reconnect_max_s)
+            finally:
+                self.connected = False
 
     def _handle(self, msg) -> None:
         try:
             data = json.loads(msg)
         except (TypeError, ValueError):
             return
+        self.messages += 1
         self.last_msg_ts = time.time()
         if self.on_message is not None:
             try:

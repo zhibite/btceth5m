@@ -141,7 +141,9 @@ async def test_recorder_book_snapshot_shape(tmp_path):
     assert payload["slug"] == market.slug
     assert payload["books"]["up"]["bids"] == [[0.40, 10.0]]
     assert payload["books"]["up"]["asks"] == [[0.60, 5.0]]
+    assert payload["books"]["up"]["updated_ts"] == 1.0
     assert payload["books"]["down"]["bids"] == [[0.38, 7.0]]
+    assert payload["books"]["down"]["updated_ts"] == 1.0
 
 
 async def test_recorder_heals_a_partial_line_after_crash(tmp_path):

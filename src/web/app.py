@@ -266,6 +266,7 @@ async def api_status(_: None = Depends(require_read)) -> dict:
             "summary": state.db.summary(),
             "assets": state.engine.latest,
             "configured_assets": state.settings.assets_list,
+            "enabled_assets": _enabled_assets(state),
             "positions": state.db.open_positions(),
             "feeds": {
                 "rtds": state.rtds.health(),
@@ -276,6 +277,15 @@ async def api_status(_: None = Depends(require_read)) -> dict:
                 if getattr(state, "recorder", None) is not None
                 else None
             ),
+            # The portfolio guard uses the global value; per-asset overrides
+            # do NOT raise it. Surface both so a 100/20 mismatch is visible.
+            "risk_limits": {
+                "global_daily_loss_usd": state.runtime.params.daily_loss_limit_usd,
+                "asset_daily_loss_usd": {
+                    asset: state.runtime.params_for(asset).daily_loss_limit_usd
+                    for asset in state.settings.assets_list
+                },
+            },
             "config": state.runtime.params.model_dump(),
         }
     )
@@ -445,6 +455,13 @@ _LIVE_LOCK_LABELS = {
 }
 
 
+def _enabled_assets(state: Any) -> list[str]:
+    fn = getattr(state.runtime, "enabled_assets", None)
+    if callable(fn):
+        return list(fn(state.settings.assets_list))
+    return list(state.settings.assets_list)
+
+
 def _asset_modes(state: Any) -> dict[str, str]:
     fn = getattr(state.router, "mode_for", None)
     if not callable(fn):
@@ -532,6 +549,7 @@ async def api_config_assets(_: None = Depends(require_login)) -> dict:
         )
     return {
         "assets": state.settings.assets_list,
+        "enabled_assets": _enabled_assets(state),
         "cards": cards,
         "common_params": state.runtime.params.model_dump(),
         "common_fields": list(COMMON_PARAM_FIELDS),

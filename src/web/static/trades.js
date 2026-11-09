@@ -24,11 +24,15 @@ function syncAssetUrl() {
 function ensureAssetOptions(status) {
   const select = $("asset-filter");
   if (!select) return;
-  // Confirmed configuration first, so the selector still works before the
-  // engine has published any tick for an asset.
-  const names = new Set(status && status.configured_assets ? status.configured_assets : []);
-  Object.keys((status && status.assets) || {}).forEach((a) => names.add(a));
-  const assets = Array.from(names).sort();
+  // Keep the configured order (BTC, ETH, BNB, ...) and fall back to runtime
+  // keys before the engine has published a tick for an asset.
+  const assets = [];
+  const push = (value) => {
+    const name = String(value || "").toUpperCase();
+    if (name && !assets.includes(name)) assets.push(name);
+  };
+  ((status && status.configured_assets) || []).forEach(push);
+  Object.keys((status && status.assets) || {}).forEach(push);
   const existing = new Set(Array.from(select.options).map((o) => o.value));
   for (const asset of assets) {
     if (!existing.has(asset)) {

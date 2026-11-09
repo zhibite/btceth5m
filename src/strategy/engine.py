@@ -71,12 +71,17 @@ class StrategyEngine:
         self._tasks: list[asyncio.Task] = []
         self._last_near_miss: dict[str, float] = {}
         self._settle_first_seen: dict[tuple[str, int], float] = {}
+        # Last p0 value/source written for each window. Late Gamma/prev-final
+        # p0 arrives after discovery, so the engine (not only upsert_window)
+        # must persist it for the dashboard and offline analysis.
+        self._p0_written: dict[tuple[str, int], tuple[float, str]] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def start(self) -> None:
         self._load_open_positions()
         if self.maker_shadow is not None:
             self.maker_shadow.load_active()
+        self._sync_active_assets()
         self._running = True
         self._tasks = [
             asyncio.create_task(self._tick_loop(), name="engine-ticks"),
@@ -104,6 +109,32 @@ class StrategyEngine:
                 pass
         self._tasks.clear()
 
+    def _active_assets(self) -> set[str]:
+        """Coins whose CLOB book we need to keep subscribed.
+
+        Disabled coins stop consuming order-book traffic, but a coin with an
+        open position must stay subscribed until it settles (mark price and
+        maker-shadow fills still need its book).
+        """
+        active = {
+            asset
+            for asset in self.settings.assets_list
+            if self.runtime.params_for(asset).trading_enabled
+        }
+        active.update(pos.asset for pos in self.positions.values())
+        return active
+
+    def _sync_active_assets(self) -> None:
+        active = self._active_assets()
+        set_active = getattr(self.books, "set_active_assets", None)
+        if callable(set_active):
+            set_active(active)
+        # Keep the RTDS silence watchdog on the same set: a disabled coin
+        # must not force the shared socket to reconnect.
+        set_watch = getattr(self.rtds, "set_watch_assets", None)
+        if callable(set_watch):
+            set_watch(active)
+
     def _load_open_positions(self) -> None:
         for row in self.db.open_positions():
             pos = PaperPosition(
@@ -126,6 +157,13 @@ class StrategyEngine:
     async def on_window(self, asset: str, market: WindowMarket) -> None:
         self.books.set_tokens(asset, [market.up_token, market.down_token])
         self.db.upsert_window(market)
+        if market.price_to_beat is not None:
+            # upsert_window already persisted this value; remember it so the
+            # first tick does not repeat the same UPDATE.
+            self._p0_written[(asset, int(market.start_ts))] = (
+                float(market.price_to_beat),
+                str(market.p0_source or ""),
+            )
         self.latest.setdefault(asset, {})
         self.latest[asset].update(
             {
@@ -173,6 +211,9 @@ class StrategyEngine:
     # ── main tick ────────────────────────────────────────────────────────
     async def tick(self) -> None:
         now = time.time()
+        # Runtime enable/disable edits take effect on the next tick: filter the
+        # CLOB subscription before evaluating any asset.
+        self._sync_active_assets()
         if self.maker_shadow is not None:
             trades = self.books.drain_trades()
             if trades:
@@ -184,6 +225,10 @@ class StrategyEngine:
             if market is None:
                 self._publish(asset, {"status": "no_window"})
                 continue
+            if market.price_to_beat is not None:
+                # WindowManager can fill a late or prev-final p0 while RTDS is
+                # in a gap; persist it before the feed-staleness checks.
+                self._persist_p0(asset, market, market.price_to_beat)
 
             buf = self.rtds.buffer(asset)
             if buf is None or buf.latest_price() is None:
@@ -202,13 +247,13 @@ class StrategyEngine:
                 if p0 is not None:
                     market.price_to_beat = p0
                     market.p0_source = "rtds"
-                    self.db.set_window_p0(asset, market.start_ts, p0, "rtds")
             if p0 is None:
                 self._publish(
                     asset,
                     self._base_payload(market, now, status="waiting_p0", spot=buf.latest_price()),
                 )
                 continue
+            self._persist_p0(asset, market, p0)
 
             spot = buf.latest_price()
             sigma = buf.sigma(params.sigma_lookback_s, params.min_sigma_samples)
@@ -445,6 +490,10 @@ class StrategyEngine:
     def _candidates(
         self, market: WindowMarket, fair_up: float, now: float, params
     ) -> list[dict]:
+        if not params.trading_enabled:
+            # The CLOB book for a disabled coin is not subscribed; its last
+            # snapshot would be stale, so do not present it as a live quote.
+            return []
         out: list[dict] = []
         for side, token, fair in (
             ("UP", market.up_token, fair_up),
@@ -513,6 +562,15 @@ class StrategyEngine:
         payload["asset"] = asset
         payload["ts"] = time.time()
         self.latest[asset] = payload
+
+    def _persist_p0(self, asset: str, market: WindowMarket, p0: float) -> None:
+        """Write a late p0 once per value/source, not on every tick."""
+        key = (asset, int(market.start_ts))
+        signature = (float(p0), str(market.p0_source or ""))
+        if self._p0_written.get(key) == signature:
+            return
+        self.db.set_window_p0(asset, market.start_ts, p0, signature[1])
+        self._p0_written[key] = signature
 
     def _position_info(self, asset: str, start_ts: int) -> Optional[dict]:
         pos = self.positions.get((asset, int(start_ts)))

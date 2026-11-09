@@ -8,7 +8,7 @@ hourly. Names and payload shapes match ``research/scripts/record_live.py`` so
 Streams written under ``<recording_dir>/``:
 
   ``rtds_YYYYMMDD_HH.jsonl``           raw RTDS messages (Chainlink + TWAP)
-  ``book_{ASSET}_YYYYMMDD_HH.jsonl``   1 Hz top-N snapshot of both tokens
+  ``book_{ASSET}_YYYYMMDD_HH.jsonl``   1 Hz top-N snapshot + per-token updated_ts
   ``trades_{ASSET}_YYYYMMDD_HH.jsonl`` every ``last_trade_price`` event
   ``gamma_YYYYMMDD_HH.jsonl``          window metadata (p0, final, tokens)
   ``clob_YYYYMMDD_HH.jsonl``           optional raw CLOB messages
@@ -255,7 +255,12 @@ class Recorder:
 
     def _sample_books(self) -> None:
         now = time.time()
+        # The CLOB feed only subscribes to enabled coins (plus coins with an
+        # open position), so do not write empty snapshots for disabled ones.
+        active = getattr(self.books, "active_assets", None) if self.books is not None else None
         for asset in self.assets:
+            if active is not None and asset not in active:
+                continue
             market = self.windows.current_window(asset)
             if market is None:
                 continue
@@ -265,7 +270,7 @@ class Recorder:
                     continue
                 book = self.books.book(token) if self.books is not None else None
                 if book is None:
-                    books[token] = {"bids": [], "asks": []}
+                    books[token] = {"bids": [], "asks": [], "updated_ts": None}
                     continue
                 books[token] = {
                     "bids": [
@@ -276,6 +281,9 @@ class Recorder:
                         [price, size]
                         for price, size in book.asks_ascending()[: self.book_levels]
                     ],
+                    # Last CLOB update, not the sampler timestamp. Replay
+                    # uses this to reproduce the live stale-book gate.
+                    "updated_ts": book.updated_ts,
                 }
             self._put(
                 f"book_{asset}",

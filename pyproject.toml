@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "polymarket-5m-paper"
 version = "0.1.0"
-description = "Polymarket 5m BTC/ETH TWAP fair-value paper trading bot"
+description = "Polymarket 5m multi-coin TWAP fair-value paper trading bot"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111",
