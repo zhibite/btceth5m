@@ -175,7 +175,7 @@ class RtdsFeed:
         self.last_msg_ts = {a: 0.0 for a in self.assets}
         self.reconnects = 0
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._tasks: list[asyncio.Task] = []
 
     def buffer(self, asset: str) -> Optional[PriceBuffer]:
         return self.buffers.get(asset.upper())
@@ -187,23 +187,28 @@ class RtdsFeed:
 
     def start(self) -> None:
         self._running = True
-        self._task = asyncio.create_task(self._run(), name="rtds")
+        self._tasks = [
+            asyncio.create_task(self._run_asset(asset), name=f"rtds-{asset}")
+            for asset in self.assets
+        ]
         log.info(
             "rtds.started",
             assets=self.assets,
             symbols=list(self.symbols.values()),
+            connections=len(self._tasks),
             url=self.url,
         )
 
     async def stop(self) -> None:
         self._running = False
-        if self._task is not None:
-            self._task.cancel()
+        for task in self._tasks:
+            task.cancel()
+        for task in self._tasks:
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        self._tasks.clear()
         for asset in self.assets:
             self.connected[asset] = False
 
@@ -240,27 +245,39 @@ class RtdsFeed:
         return [a for a in self.watch_assets if self._raw_stale(a, now)]
 
     # ── subscription ─────────────────────────────────────────────────────
-    def subscriptions(self) -> list[dict]:
-        """All symbol/topic subscriptions sent on the single connection."""
+    def subscriptions(self, asset: str | None = None) -> list[dict]:
+        """Subscriptions for one asset, or the combined list for tests/docs.
+
+        RTDS only pushes live ``crypto_prices_chainlink`` for the first symbol
+        on a shared socket, so the real connections are one per asset; the
+        combined list is still useful for documentation and tests.
+        """
         topics = [self.TOPIC]
         if self.twap_topic:
             topics.append(self.TWAP_TOPIC)
+        targets = [str(asset).upper()] if asset else self.assets
         return [
             {
                 "topic": topic,
                 "type": "update",
                 "filters": json.dumps(
-                    {"symbol": self.symbols[asset]}, separators=(",", ":")
+                    {"symbol": self.symbols[target]}, separators=(",", ":")
                 ),
             }
-            for asset in self.assets
+            for target in targets
             for topic in topics
         ]
 
-    async def _run(self) -> None:
+    async def _run_asset(self, asset: str) -> None:
+        """Keep one RTDS connection per asset alive.
+
+        A single multiplexed socket only delivered live Chainlink updates for
+        the first symbol in production; per-asset sockets restore live data
+        for every coin and let the watchdog reconnect only the silent one.
+        """
         subscription = {
             "action": "subscribe",
-            "subscriptions": self.subscriptions(),
+            "subscriptions": self.subscriptions(asset),
         }
         delay = self.reconnect_base_s
         while self._running:
@@ -272,20 +289,19 @@ class RtdsFeed:
                     close_timeout=5,
                 ) as ws:
                     await ws.send(json.dumps(subscription))
-                    connected_at = time.time()
-                    for asset in self.assets:
-                        self.connected[asset] = True
-                        self.last_error[asset] = ""
-                        # Start the watchdog from connect, not from the last
-                        # print of the previous socket.
-                        self.last_raw_ts[asset] = connected_at
+                    self.connected[asset] = True
+                    self.last_error[asset] = ""
+                    # Start the watchdog from connect, not from the last print
+                    # of the previous socket.
+                    self.last_raw_ts[asset] = time.time()
                     delay = self.reconnect_base_s
                     last_ping = 0.0
                     log.info(
                         "rtds.connected",
-                        assets=self.assets,
+                        asset=asset,
+                        symbol=self.symbols[asset],
                         subscriptions=len(subscription["subscriptions"]),
-                        watch_assets=self.watch_assets,
+                        watched=asset in self.watch_assets,
                         data_timeout_s=self.data_timeout_s,
                     )
                     while self._running:
@@ -297,32 +313,28 @@ class RtdsFeed:
                         except asyncio.TimeoutError:
                             msg = None
                         if msg is not None:
-                            self._handle_any(msg, time.time())
-                        stale = self.stale_assets()
-                        if stale:
+                            self._handle(asset, msg, time.time())
+                        if asset in self.watch_assets and self._raw_stale(asset):
                             raise ConnectionError(
-                                "rtds raw data timeout: "
-                                + ",".join(stale)
-                                + f" (>{self.data_timeout_s:.0f}s)"
+                                f"rtds raw data timeout: {asset} "
+                                f"(>{self.data_timeout_s:.0f}s)"
                             )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 self.reconnects += 1
-                for asset in self.assets:
-                    self.connected[asset] = False
-                    self.last_error[asset] = repr(exc)
+                self.connected[asset] = False
+                self.last_error[asset] = repr(exc)
                 log.warning(
                     "rtds.reconnect",
+                    asset=asset,
                     error=repr(exc),
                     delay_s=delay,
-                    assets=self.assets,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2.0, self.reconnect_max_s)
             finally:
-                for asset in self.assets:
-                    self.connected[asset] = False
+                self.connected[asset] = False
 
     # ── message handling ─────────────────────────────────────────────────
     def _handle_any(self, msg, recv_ts: float | None = None) -> None:

@@ -75,6 +75,15 @@ def test_rtds_subscriptions_multiplex_every_symbol():
     assert set(SYMBOLS) == set(assets)
 
 
+def test_rtds_asset_subscription_only_targets_that_symbol():
+    feed = RtdsFeed(["BTC", "ETH"], "wss://example.invalid", twap_topic=True)
+    subs = feed.subscriptions("ETH")
+    assert len(subs) == 2
+    assert {
+        json.loads(sub["filters"])["symbol"] for sub in subs
+    } == {"eth/usd"}
+
+
 def test_rtds_routes_multiplexed_messages_by_symbol():
     feed = RtdsFeed(["BTC", "ETH", "SOL"], "wss://example.invalid")
     chainlink = json.dumps(
